@@ -8,58 +8,8 @@ CYAN=$(tput setaf 6)
 BOLD=$(tput bold)
 RESET=$(tput sgr0)
 SHOW_POWERCONTROL_NOTICE=0
-SHOW_BATTERYCONTROL_NOTICE=0
-SHOW_SLEEPCONTROL_NOTICE=0
-SHOW_GPUCONTROL_NOTICE=0
 TEST_FILE="/etc/init/.boot_test"
-echo "${MAGENTA}"
-echo "${BOLD}noexec warning can be safely ignored. ${RESET}"
-echo
-detect_backlight_path() {
-    BACKLIGHT_BASE="/sys/class/backlight"
-    BRIGHTNESS_PATH=""
-    MAX_BRIGHTNESS_PATH=""
-    BACKLIGHT_NAME=""
-
-    if [ ! -d "$BACKLIGHT_BASE" ]; then
-        echo "No backlight sysfs found at $BACKLIGHT_BASE"
-        return 1
-    fi
-    
-    for candidate in intel_backlight amdgpu_bl0 radeon_bl0 panel0-backlight pwm-backlight acpi_video0 backlight; do
-        if [ -d "$BACKLIGHT_BASE/$candidate" ]; then
-            BACKLIGHT_NAME="$candidate"
-            BRIGHTNESS_PATH="$BACKLIGHT_BASE/$candidate/brightness"
-            MAX_BRIGHTNESS_PATH="$BACKLIGHT_BASE/$candidate/max_brightness"
-            
-            if [ -r "$BRIGHTNESS_PATH" ] && [ -r "$MAX_BRIGHTNESS_PATH" ]; then
-                break
-            else
-                BRIGHTNESS_PATH=""
-                MAX_BRIGHTNESS_PATH=""
-                BACKLIGHT_NAME=""
-            fi
-        fi
-    done
-
-    if [ -z "$BRIGHTNESS_PATH" ] || [ -z "$MAX_BRIGHTNESS_PATH" ]; then
-        for dir in "$BACKLIGHT_BASE"/*; do
-            if [ -d "$dir" ] && [ -r "$dir/brightness" ] && [ -r "$dir/max_brightness" ]; then
-                BACKLIGHT_NAME=$(basename "$dir")
-                BRIGHTNESS_PATH="$dir/brightness"
-                MAX_BRIGHTNESS_PATH="$dir/max_brightness"
-                break
-            fi
-        done
-    fi
-
-    if [ -z "$BRIGHTNESS_PATH" ] || [ -z "$MAX_BRIGHTNESS_PATH" ]; then
-        echo "No valid backlight interface found."
-        return 1
-    fi
-}
-
- detect_cpu_type() {
+detect_cpu_type() {
     CPU_VENDOR=$(grep -m1 'vendor_id' /proc/cpuinfo | awk '{print $3}' || echo "unknown")
     IS_INTEL=0
     IS_AMD=0
@@ -92,81 +42,8 @@ detect_backlight_path() {
 }
 
 
-detect_gpu_freq() {
-    GPU_FREQ_PATH=""
-    GPU_MAX_FREQ=""
-    GPU_TYPE="unknown"
-
-    # Intel Xe
-    if [ -f /sys/class/drm/card0/gt_max_freq_mhz ]; then
-        GPU_TYPE="intel"
-        GPU_FREQ_PATH="/sys/class/drm/card0/gt_max_freq_mhz"
-        GPU_MAX_FREQ=$(sudo cat "$GPU_FREQ_PATH" 2>/dev/null)
-
-    # AMD
-    elif [ -f /sys/class/drm/card0/device/pp_od_clk_voltage ]; then
-        GPU_TYPE="amd"
-        PP_OD_FILE="/sys/class/drm/card0/device/pp_od_clk_voltage"
-        mapfile -t SCLK_LINES < <(sudo grep -i '^sclk' "$PP_OD_FILE" 2>/dev/null)
-        if [[ ${#SCLK_LINES[@]} -gt 0 ]]; then
-            GPU_MAX_FREQ=$(printf '%s\n' "${SCLK_LINES[@]}" \
-                | sed -n 's/.*\([0-9]\{1,\}\)[Mm][Hh][Zz].*/\1/p' \
-                | sort -nr | head -n1)
-        fi
-        GPU_FREQ_PATH="$PP_OD_FILE"
-        GPU_MAX_FREQ=${GPU_MAX_FREQ:-0}
-
-    # AMD GCN
-    elif [ -f /sys/class/drm/card0/device/pp_dpm_sclk ]; then
-        GPU_TYPE="amd"
-        PP_DPM_SCLK="/sys/class/drm/card0/device/pp_dpm_sclk"
-        GPU_MAX_FREQ=$(grep -oi '[0-9]\+mhz' "$PP_DPM_SCLK" | grep -oi '[0-9]\+' | sort -nr | head -n1)
-        GPU_FREQ_PATH="$PP_DPM_SCLK"
-        GPU_MAX_FREQ=${GPU_MAX_FREQ:-0}
-
-    # Mali / Adreno
-    else
-        for d in /sys/class/devfreq/*; do
-            if echo "$d" | grep -qiE 'mali|gpu'; then
-                if [ -f "$d/max_freq" ]; then
-                    GPU_TYPE="mali"
-                    GPU_FREQ_PATH="$d/max_freq"
-                    GPU_MAX_FREQ=$(sudo cat "$GPU_FREQ_PATH" 2>/dev/null)
-                    break
-                elif [ -f "$d/available_frequencies" ]; then
-                    GPU_TYPE="mali"
-                    GPU_FREQ_PATH="$d/available_frequencies"
-                    GPU_MAX_FREQ=$(sudo tr ' ' '\n' < "$GPU_FREQ_PATH" 2>/dev/null | sort -nr | head -n1)
-                    break
-                fi
-            fi
-        done
-
-        # Adreno Fallback
-        if [ "$GPU_TYPE" = "unknown" ] && [ -d /sys/class/kgsl/kgsl-3d0 ]; then
-            if [ -f /sys/class/kgsl/kgsl-3d0/max_gpuclk ]; then
-                GPU_TYPE="adreno"
-                GPU_FREQ_PATH="/sys/class/kgsl/kgsl-3d0/max_gpuclk"
-                GPU_MAX_FREQ=$(sudo cat "$GPU_FREQ_PATH" 2>/dev/null)
-            elif [ -f /sys/class/kgsl/kgsl-3d0/gpuclk ]; then
-                GPU_TYPE="adreno"
-                GPU_FREQ_PATH="/sys/class/kgsl/kgsl-3d0/gpuclk"
-                GPU_MAX_FREQ=$(sudo cat "$GPU_FREQ_PATH" 2>/dev/null)
-            fi
-        fi
-    fi
-}
 
 INSTALL_DIR="/usr/local/bin/PowerControl"
-echo ""
-echo "${RESET}${RED}╔${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}╗"
-echo "${RESET}${YELLOW}║                                          NOTICE:                                              ║"
-echo "${RESET}${RED}║                                                                                               ║"
-echo "${RESET}${YELLOW}║             VT-2 (or enabling sudo in crosh) is required to run this installer!               ║"
-echo "${RESET}${RED}║               ${RESET}${YELLOW}Must be installed in a location without the noexec mount.${RED}                       ║"
-echo "${RESET}${YELLOW}╚${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}═${RESET}${RED}═${RESET}${YELLOW}╝"
-echo "${RESET}"
-
 DEFAULT_INSTALL_DIR="/usr/local/bin/PowerControl"
 
 if [ -f "$DEFAULT_INSTALL_DIR/.install_path" ]; then
@@ -202,11 +79,6 @@ done
 
 echo "${BLUE}Stopping PowerControl (in case of reinstall)${RESET}"
 sudo bash "$INSTALL_DIR/powercontrol" stop 2>/dev/null
-#sudo pkill -f "/usr/local/bin/gpucontrol" >/dev/null 2>&1
-#sudo pkill -f "/usr/local/bin/fancontrol" >/dev/null 2>&1
-#sudo pkill -f "/usr/local/bin/sleepcontrol" >/dev/null 2>&1
-#sudo pkill -f "/usr/local/bin/batterycontrol" >/dev/null 2>&1
-#sudo pkill -f "/usr/local/bin/powercontrol" >/dev/null 2>&1
 echo "$INSTALL_DIR" | sudo tee "$INSTALL_DIR/.install_path" >/dev/null
 
 declare -a files=(
@@ -233,23 +105,19 @@ for file in "${files[@]}"; do
 done
 
 OLD_CONFIG_PATH="$INSTALL_DIR/config.sh"
-if [ -d "/home/chronos/user/MyFiles/Downloads" ]; then
-    CONFIG_DIR="/home/chronos/user/MyFiles/Downloads/PowerControl_Config"
-    mkdir -p "$CONFIG_DIR"
-else
-    CONFIG_DIR="/usr/local/bin/PowerControl_Config"
-    sudo mkdir -p "$CONFIG_DIR"
-    sudo chown -R 1000:1000 "$CONFIG_DIR"
-    sudo curl -fsSL https://raw.githubusercontent.com/shadowed1/PowerControl/main/bin/gui.py -o /bin/powercontrol-gui 2>/dev/null
-    sudo chmod +x /bin/powercontrol-gui 2>/dev/null
-    alias powercontrol-gui='sudo -E powercontrol-gui' 
-    sudo mkdir -p /usr/share/applications/ /usr/share/icons/hicolor/48x48/apps/
+CONFIG_DIR="$INSTALL_DIR"
+sudo mkdir -p "$CONFIG_DIR"
+sudo chown -R 1000:1000 "$CONFIG_DIR"
+sudo curl -fsSL https://raw.githubusercontent.com/shadowed1/PowerControl/main/bin/gui.py -o /bin/powercontrol-gui 2>/dev/null
+sudo chmod +x /bin/powercontrol-gui 2>/dev/null
+alias powercontrol-gui='sudo -E powercontrol-gui' 
+sudo mkdir -p /usr/share/applications/ /usr/share/icons/hicolor/48x48/apps/
     cat <<'EOF' | sudo tee /usr/share/applications/powercontrol-gui.desktop > /dev/null
 [Desktop Entry]
 Version=1.0
 Type=Application
 Name=PowerControl
-Comment=Get the power to control your CPU, Battery, Fan Curve, GPU, and Sleep for ChromeOS! 
+Comment=Get the power to control your CPU! 
 Exec=sudo -E /bin/powercontrol-gui
 Icon=powercontrol
 Terminal=true
@@ -267,16 +135,12 @@ else
     BASHRC="$HOME/.bashrc"
 fi
 
-sudo cp $INSTALL_DIR/config.sh $INSTALL_DIR/config.sh.bak 2>/dev/null
 if [[ -f "$OLD_CONFIG_PATH" ]]; then
-    echo "${YELLOW}Found legacy config.sh — migrating to fixed location${RESET}"
     cp "$OLD_CONFIG_PATH" "$NEW_CONFIG_PATH"
     sudo rm "$OLD_CONFIG_PATH"
     sudo chmod 666 "$NEW_CONFIG_PATH" 2>/dev/null
-
 elif [[ -f "$NEW_CONFIG_PATH" ]]; then
     echo "${GREEN}Existing config preserved at:${BOLD} $NEW_CONFIG_PATH"
-
 else
     echo "${RESET}${BLUE}No config found — downloading default config${RESET}"
     if curl -fsSL "$CONFIG_URL" -o "$NEW_CONFIG_PATH"; then
@@ -287,11 +151,7 @@ else
 fi
 
 CONFIG_FILE="$NEW_CONFIG_PATH"
-
-
-
 detect_cpu_type
-
 
 if [ "$IS_INTEL" -eq 1 ]; then
     SHOW_POWERCONTROL_NOTICE=1
