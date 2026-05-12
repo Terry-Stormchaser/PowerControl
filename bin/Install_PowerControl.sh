@@ -195,13 +195,12 @@ declare -a ordered_keys=(
   "IS_ARM"
 )
 
-declare -a ordered_categories=("PowerControl" "BatteryControl" "FanControl" "GPUControl" "SleepControl" "Platform Configuration")
+declare -a ordered_categories=("PowerControl" "Platform Configuration")
 declare -A categories=(
   ["PowerControl"]="MAX_TEMP MIN_TEMP MAX_PERF_PCT MIN_PERF_PCT HOTZONE CPU_POLL RAMP_UP RAMP_DOWN"
   ["Platform Configuration"]="IS_AMD IS_INTEL IS_ARM PERF_PATH PERF_PATHS TURBO_PATH"
 )
 
-if [[ -z "${ORIGINAL_GPU_MAX_FREQ}" ]]; then ORIGINAL_GPU_MAX_FREQ=$GPU_MAX_FREQ; fi
 if [[ -z "${MAX_TEMP}" ]]; then MAX_TEMP=90; fi
 if [[ -z "${MIN_TEMP}" ]]; then MIN_TEMP=63; fi
 if [[ -z "${MAX_PERF_PCT}" ]]; then MAX_PERF_PCT=100; fi
@@ -294,20 +293,9 @@ if sudo touch "$TEST_FILE" 2>/dev/null; then
     sudo rm -f "$TEST_FILE"
 
     if [[ -z "$link_cmd" || "$link_cmd" =~ ^[Yy]$ ]]; then
-        enable_component_on_boot "BatteryControl" "$INSTALL_DIR/batterycontrol.conf"
         enable_component_on_boot "PowerControl" "$INSTALL_DIR/powercontrol.conf"
-
-        if [ "$SKIP_FANCONTROL" = false ]; then
-            enable_component_on_boot "FanControl" "$INSTALL_DIR/fancontrol.conf"
-        else
-            echo "${GREEN}Skipping FanControl boot setup. No fan to control.${RESET}"
-            echo ""
-        fi
-
-        enable_component_on_boot "GPUControl" "$INSTALL_DIR/gpucontrol.conf"
-        enable_component_on_boot "SleepControl" "$INSTALL_DIR/sleepcontrol.conf"
     else
-        echo "Skipping boot-time setup since global commands were declined."
+        echo "Skipping boot-time setup."
     fi
 else
     echo "${YELLOW}Rootfs verification must be disabled to allow startup on boot. ${RESET}"
@@ -339,61 +327,7 @@ start_component_now() {
 }
 
 echo
-start_component_now "BatteryControl" "$INSTALL_DIR/batterycontrol"
 start_component_now "PowerControl" "$INSTALL_DIR/powercontrol"
-if [ "$SKIP_FANCONTROL" = false ]; then
-    start_component_now "FanControl" "$INSTALL_DIR/fancontrol"
-else
-    echo "${YELLOW}FanControl start skipped - passively cooled device.${RESET}"
-    echo ""
-fi
-start_component_now "GPUControl" "$INSTALL_DIR/gpucontrol"
-start_component_now "SleepControl" "$INSTALL_DIR/sleepcontrol"
-sleep 0.2
-echo ""
-sleep 0.01
-echo "                                                       ${RED}████████████${RESET}           "
-sleep 0.01
-echo "                                                   ${RED}████${RESET}        ${RED}████${RESET}       "
-sleep 0.01
-echo "                                                 ${RED}██${RESET}              ${YELLOW}██${RESET}     "
-sleep 0.01
-echo "                                               ${GREEN}██${RESET}     ${BLUE}██████${RESET}     ${YELLOW}██${RESET}   "
-sleep 0.01
-echo "                                              ${GREEN}██${RESET}     ${BLUE}████████${RESET}     ${YELLOW}██${RESET}  "
-sleep 0.01
-echo "                                              ${GREEN}██${RESET}     ${BLUE}████████${RESET}     ${YELLOW}██${RESET}  "
-sleep 0.01
-echo "                                               ${GREEN}██${RESET}     ${BLUE}██████${RESET}     ${YELLOW}██${RESET}   "
-sleep 0.01
-echo "                                                 ${GREEN}██${RESET}              ${YELLOW}██${RESET}     "
-sleep 0.01
-echo "                                                   ${GREEN}████${RESET}        ${YELLOW}████${RESET}       "
-sleep 0.01
-echo "                                                       ${GREEN}████████████${RESET}           "
-sleep 0.01
-echo ""
-sleep 0.01
-echo "                                         ${RED}╔═══════════════════════════════╗${RESET}"
-sleep 0.01
-echo "                                         ${YELLOW}║ ╔═══════════════════════════╗ ║${RESET}"
-sleep 0.01
-echo "                                         ${GREEN}║ ║ ╔═══════════════════════╗ ║ ║${RESET}"
-sleep 0.01
-echo "                                         ${RESET}║ ║ ║ PowerControl ║ ║ ║${RESET}"
-sleep 0.01
-echo "                                         ${CYAN}║ ║ ╚═══════════════════════╝ ║ ║${RESET}"
-sleep 0.01
-echo "                                         ${BLUE}║ ╚═══════════════════════════╝ ║${RESET}"
-sleep 0.01
-echo "                                         ${MAGENTA}╚═══════════════════════════════╝${RESET}"
-sleep 0.01
-echo ""
-sleep 0.01
-echo ""
-sleep 0.2
-echo "                                              Commands with examples:"
-sleep 0.01
 echo "${CYAN}"
 sleep 0.01
 echo "╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗"
