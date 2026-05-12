@@ -1,0 +1,1002 @@
+#!/bin/bash
+RED=$(tput setaf 1)
+GREEN=$(tput setaf 2)
+YELLOW=$(tput setaf 3)
+BLUE=$(tput setaf 4)
+MAGENTA=$(tput setaf 5)
+CYAN=$(tput setaf 6)
+BOLD=$(tput bold)
+RESET=$(tput sgr0)
+INSTALL_DIR="@INSTALL_DIR@"
+if [ -d "/home/chronos/user/MyFiles/Downloads" ]; then
+    CONFIG_FILE="/home/chronos/user/MyFiles/Downloads/ChromeOS_PowerControl_Config/config"
+else
+    CONFIG_FILE="/usr/local/bin/ChromeOS_PowerControl_Config/config"
+fi
+LOG_FILE="/var/log/powercontrol.log"
+RUN_FLAG="$INSTALL_DIR/.powercontrol_enabled"
+PID_FILE="$INSTALL_DIR/.powercontrol_pid"
+VERSION_FILE="$INSTALL_DIR/version"
+CPU_VENDOR=$(grep -m1 'vendor_id' /proc/cpuinfo | awk '{print $3}' || echo "unknown")
+PERF_PATH=""
+PERF_PATHS=()
+TURBO_PATH=""
+IS_AMD=0
+IS_INTEL=0
+IS_ARM=0
+timestamp=$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1)
+CONF_SOURCE="$INSTALL_DIR/powercontrol.conf"
+CONF_TARGET="/etc/init/powercontrol.conf"
+
+wait_for_config() {
+    local config_dir="/home/chronos/user/MyFiles/Downloads/ChromeOS_PowerControl_Config"
+    local max_wait=300
+    local elapsed=0
+    
+    while [ $elapsed -lt $max_wait ]; do
+        if [ -f "$CONFIG_FILE" ]; then
+            return 0
+        fi
+        
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+    
+    echo "${RED}Error: Config file not available after 5 minutes${RESET}" | tee -a "$LOG_FILE"
+    return 1
+}
+
+wait_for_config
+if ! ( [[ -z "$1" ]] || [[ "$1" == "--h" || "$1" == "-h" || "$1" == "help_all" || "$1" == "h" || "$1" == "--help" || "$1" == "-help" || "$1" == "all" || "$1" == "help" || "$1" == "monitor" || "$1" == "mon" || "$1" == "gui" || "$1" == "reinstall" || "$1" == "status" ]] ) && [[ "$(id -u)" -ne 0 ]]; then
+    echo "${RED}PowerControl requires sudo to run.${RESET}"
+    echo "  Try: sudo powercontrol $*  or  sudo $0 $*"
+    exit 1
+fi
+
+detect_cpu_type() {
+    CPU_VENDOR=$(grep -m1 'vendor_id' /proc/cpuinfo | awk '{print $3}' || echo "unknown")
+    IS_INTEL=0
+    IS_AMD=0
+    IS_ARM=0
+    PERF_PATH=""
+    PERF_PATHS=()
+    TURBO_PATH=""
+
+    case "$CPU_VENDOR" in
+        GenuineIntel)
+            IS_INTEL=1
+            if [ -f "/sys/devices/system/cpu/intel_pstate/max_perf_pct" ]; then
+                PERF_PATH="/sys/devices/system/cpu/intel_pstate/max_perf_pct"
+                TURBO_PATH="/sys/devices/system/cpu/intel_pstate/no_turbo"
+            fi
+            ;;
+        AuthenticAMD)
+            IS_AMD=1
+            if [ -f "/sys/devices/system/cpu/amd_pstate/max_perf_pct" ]; then
+                PERF_PATH="/sys/devices/system/cpu/amd_pstate/max_perf_pct"
+            else
+                mapfile -t PERF_PATHS < <(find /sys/devices/system/cpu/cpufreq/ -type f -name 'scaling_max_freq' 2>/dev/null)
+            fi
+            ;;
+        *)
+            IS_ARM=1
+            mapfile -t PERF_PATHS < <(find /sys/devices/system/cpu/cpufreq/ -type f -name 'scaling_max_freq' 2>/dev/null)
+            ;;
+    esac
+}
+
+    DEFAULT_HOTZONE=79
+    DEFAULT_MIN_TEMP=63
+    DEFAULT_MAX_TEMP=90
+    DEFAULT_MIN_PERF_PCT=10
+    DEFAULT_MAX_PERF_PCT=100
+    DEFAULT_RAMP_UP=10
+    DEFAULT_RAMP_DOWN=10
+    MAX_TEMP_LIMIT=95
+    DEFAULT_CPU_POLL=1
+
+    HOTZONE=""
+    MAX_TEMP=""
+    MAX_PERF_PCT=""
+    MIN_TEMP=""
+    MIN_PERF_PCT=""
+    RAMP_UP=""
+    RAMP_DOWN=""
+    CPU_POLL=""
+
+validate_config() {
+    if [[ -z "$MAX_TEMP" ]]; then MAX_TEMP=$DEFAULT_MAX_TEMP; fi
+    if [[ -z "$MIN_TEMP" ]]; then MIN_TEMP=$DEFAULT_MIN_TEMP; fi
+    if [[ -z "$MAX_PERF_PCT" ]]; then MAX_PERF_PCT=$DEFAULT_MAX_PERF_PCT; fi
+    if [[ -z "$MIN_PERF_PCT" ]]; then MIN_PERF_PCT=$DEFAULT_MIN_PERF_PCT; fi
+    if [[ -z "$HOTZONE" ]]; then HOTZONE=$DEFAULT_HOTZONE; fi
+    if [[ -z "$RAMP_UP" ]]; then RAMP_UP=$DEFAULT_RAMP_UP; fi
+    if [[ -z "$RAMP_DOWN" ]]; then RAMP_DOWN=$DEFAULT_RAMP_DOWN; fi
+    if [[ -z "$CPU_POLL" ]]; then CPU_POLL=$DEFAULT_CPU_POLL; fi
+
+    if (( IS_ARM == 1 && MAX_TEMP > 84 )); then
+        MAX_TEMP=84
+    fi
+
+    if (( MAX_TEMP > MAX_TEMP_LIMIT )); then
+        echo "Warning: MAX_TEMP exceeds limit ($MAX_TEMP_LIMIT), resetting."
+        MAX_TEMP=$DEFAULT_MAX_TEMP
+    fi
+
+    if (( MIN_TEMP >= MAX_TEMP )); then
+        echo "Warning: MIN_TEMP >= MAX_TEMP, adjusting."
+        MIN_TEMP=$(( MAX_TEMP - 10 ))
+    fi
+
+    if (( HOTZONE >= MAX_TEMP )); then
+        echo "Warning: HOTZONE >= MAX_TEMP, adjusting."
+        MIN_TEMP=$(( MAX_TEMP - 10 ))
+    fi
+
+    if (( HOTZONE < 50 )); then
+        echo "Warning: HOTZONE below 50, resetting."
+        HOTZONE=50
+    elif (( HOTZONE > 90 )); then
+        echo "Warning: HOTZONE above 90, resetting."
+        HOTZONE=90
+    fi
+
+    if (( MIN_PERF_PCT < 10 )); then
+        echo "Warning: MIN_PERF_PCT below 10, resetting."
+        MIN_PERF_PCT=10
+    elif (( MIN_PERF_PCT > 100 )); then
+        echo "Warning: MIN_PERF_PCT above 100, resetting."
+        MIN_PERF_PCT=100
+    fi
+
+    if (( MAX_PERF_PCT < 10 )); then
+        echo "Warning: MAX_PERF_PCT below 10, resetting."
+        MAX_PERF_PCT=10
+    elif (( MAX_PERF_PCT > 100 )); then
+        echo "Warning: MAX_PERF_PCT above 100, resetting."
+        MAX_PERF_PCT=100
+    fi
+
+    if (( MAX_PERF_PCT < MIN_PERF_PCT )); then
+        echo "Warning: MAX_PERF_PCT < MIN_PERF_PCT, adjusting."
+        if (( MIN_PERF_PCT <= 90 )); then
+            MAX_PERF_PCT=$(( MIN_PERF_PCT + 10 ))
+        else
+            MAX_PERF_PCT=100
+        fi
+    fi
+}
+
+load_config() {
+    if [ -f "$CONFIG_FILE" ]; then
+        source "$CONFIG_FILE" 2>/dev/null
+    else
+        MIN_TEMP=${MIN_TEMP:-$DEFAULT_MIN_TEMP}
+        MAX_TEMP=${MAX_TEMP:-$DEFAULT_MAX_TEMP}
+        MIN_PERF_PCT=${MIN_PERF_PCT:-$DEFAULT_MIN_PERF_PCT}
+        MAX_PERF_PCT=${MAX_PERF_PCT:-$DEFAULT_MAX_PERF_PCT}
+        HOTZONE=${HOTZONE:-$DEFAULT_HOTZONE}
+        RAMP_UP=${RAMP_UP:-$DEFAULT_RAMP_UP}
+        RAMP_DOWN=${RAMP_DOWN:-$DEFAULT_RAMP_DOWN}
+        CPU_POLL=${CPU_POLL:-$DEFAULT_CPU_POLL}
+        validate_config
+    fi
+}
+
+save_config() {
+    validate_config
+    
+    if [[ -f "$CONFIG_FILE" ]]; then
+        sed -i "s/^MAX_TEMP=.*/MAX_TEMP=$MAX_TEMP/" "$CONFIG_FILE" || echo "MAX_TEMP=$MAX_TEMP" >> "$CONFIG_FILE"
+        sed -i "s/^MIN_TEMP=.*/MIN_TEMP=$MIN_TEMP/" "$CONFIG_FILE" || echo "MIN_TEMP=$MIN_TEMP" >> "$CONFIG_FILE"
+        sed -i "s/^MAX_PERF_PCT=.*/MAX_PERF_PCT=$MAX_PERF_PCT/" "$CONFIG_FILE" || echo "MAX_PERF_PCT=$MAX_PERF_PCT" >> "$CONFIG_FILE"
+        sed -i "s/^MIN_PERF_PCT=.*/MIN_PERF_PCT=$MIN_PERF_PCT/" "$CONFIG_FILE" || echo "MIN_PERF_PCT=$MIN_PERF_PCT" >> "$CONFIG_FILE"
+        sed -i "s/^RAMP_UP=.*/RAMP_UP=$RAMP_UP/" "$CONFIG_FILE" || echo "RAMP_UP=$RAMP_UP" >> "$CONFIG_FILE"
+        sed -i "s/^RAMP_DOWN=.*/RAMP_DOWN=$RAMP_DOWN/" "$CONFIG_FILE" || echo "RAMP_DOWN=$RAMP_DOWN" >> "$CONFIG_FILE"
+        sed -i "s/^HOTZONE=.*/HOTZONE=$HOTZONE/" "$CONFIG_FILE" || echo "HOTZONE=$HOTZONE" >> "$CONFIG_FILE"
+        sed -i "s/^CPU_POLL=.*/CPU_POLL=$CPU_POLL/" "$CONFIG_FILE" || echo "CPU_POLL=$CPU_POLL" >> "$CONFIG_FILE"
+
+        if [[ ${#PERF_PATHS[@]} -gt 0 ]]; then
+            PERF_PATHS_STR="$(printf ' %q' "${PERF_PATHS[@]}")"
+            PERF_PATHS_LINE="PERF_PATHS=(${PERF_PATHS_STR})"
+        
+            if grep -q '^PERF_PATHS=' "$CONFIG_FILE"; then
+                sed -i "s|^PERF_PATHS=.*|$PERF_PATHS_LINE|" "$CONFIG_FILE"
+            else
+                echo "$PERF_PATHS_LINE" >> "$CONFIG_FILE"
+            fi
+        fi
+
+        source "$CONFIG_FILE" 2>/dev/null
+        if [[ -n "$PERF_PATHS" ]]; then
+            IFS=' ' read -r -a PERF_PATHS <<< "$PERF_PATHS"
+        fi
+    fi
+}
+
+detect_cpu_type
+load_config
+
+ get_temp() {
+    local temp_celsius
+    if read -r temp_celsius < /sys/class/thermal/thermal_zone0/temp; then
+        if (( temp_celsius >= 0 )); then
+            temp_c=$(( temp_celsius / 1000 ))
+            echo "$temp_c"
+            return 0
+        fi
+    fi
+    echo "Failed to get temperature." >&2
+    continue
+    sleep 1
+}
+
+
+set_max_perf_pct() {
+    local pct=$1
+    detect_cpu_type
+    load_config
+
+    (( pct > 100 )) && pct=100
+    (( pct < 10 )) && pct=10
+
+    if (( IS_INTEL == 1 )) && [[ "$PERF_PATH" == *intel_pstate/max_perf_pct ]] && [[ -f "$PERF_PATH" ]]; then
+        if [ -w "$PERF_PATH" ]; then
+            echo "$pct" | sudo tee "$PERF_PATH" > /dev/null
+        else
+            echo "${RED}Permission denied: Cannot write to $PERF_PATH${RESET}" >&2
+            exit 1
+        fi
+
+    elif (( IS_AMD == 1 || IS_ARM == 1 )) && [[ ${#PERF_PATHS[@]} -gt 0 ]]; then
+        for path in "${PERF_PATHS[@]}"; do
+            policy_dir=$(dirname "$path")
+
+            if [[ -f "$policy_dir/cpuinfo_max_freq" && -f "$policy_dir/cpuinfo_min_freq" ]]; then
+                max_freq=$(<"$policy_dir/cpuinfo_max_freq")
+                min_freq=$(<"$policy_dir/cpuinfo_min_freq")
+
+                target_freq=$(( min_freq + (max_freq - min_freq) * pct / 100 ))
+                chosen_freq=""
+
+                if [[ -f "$policy_dir/scaling_available_frequencies" ]]; then
+                    if read -r -a available_freqs < "$policy_dir/scaling_available_frequencies"; then
+                        for freq in "${available_freqs[@]}"; do
+                            if (( freq >= target_freq )); then
+                                chosen_freq=$freq
+                                break
+                            fi
+                        done
+                        [[ -z "$chosen_freq" ]] && chosen_freq=${available_freqs[-1]}
+                        [[ -z "$chosen_freq" ]] && chosen_freq=$target_freq
+                        target_freq=$chosen_freq
+                    fi
+                fi
+
+                if [ -w "$path" ]; then
+                    echo "$target_freq" | sudo tee "$path" > /dev/null
+                else
+                    echo "${RED}Warning: Cannot write to $path; skipping.${RESET}" >&2
+                fi
+            else
+                echo "${RED}Warning: Missing cpuinfo_*_freq for $path; skipping.${RESET}" >&2
+            fi
+        done
+
+        save_config
+
+    else
+        echo "${RED}Unsupported CPU or PERF_PATH not set correctly.${RESET}" >&2
+        exit 1
+    fi
+}
+
+set_temp_threshold() {
+    if ! [[ "$1" =~ ^[0-9]+$ ]]; then
+        echo "Error: Temperature threshold must be an integer."
+        exit 1
+    fi
+    if (( $1 > MAX_TEMP_LIMIT )); then
+        echo "Error: Temperature threshold cannot exceed $MAX_TEMP_LIMIT°C."
+        exit 1
+    fi
+    load_config
+    MAX_TEMP=$1
+    save_config
+    echo "${CYAN}"
+    echo "Max temperature threshold set to $MAX_TEMP°C"
+    echo "${RESET}"
+}
+
+set_min_temp() {
+    if ! [[ "$1" =~ ^[0-9]+$ ]]; then
+        echo "Error: Min temperature must be an integer."
+        exit 1
+    fi
+    load_config
+    MIN_TEMP=$1
+    save_config
+    echo "${CYAN}"
+    echo "Min temperature threshold set to $MIN_TEMP°C"
+    echo "${RESET}"
+}
+
+set_min_perf_pct() {
+    if ! [[ "$1" =~ ^[0-9]+$ ]]; then
+        echo "Error: min_perf_pct must be an integer."
+        exit 1
+    fi
+    if (( $1 < 10 || $1 > 100 )); then
+        echo "Error: min_perf_pct must be between 10 and 100."
+        exit 1
+    fi
+    detect_cpu_type
+    load_config
+    MIN_PERF_PCT=$1
+    save_config
+    echo ""
+    echo "${CYAN}Minimum performance percentage set to $MIN_PERF_PCT%${RESET}" | tee -a "$LOG_FILE"
+    echo ""
+}
+
+set_no_turbo() {
+    local value="$1"
+    if [[ "$value" != "0" && "$value" != "1" ]]; then
+        echo "Usage: $0 no_turbo 0 or 1"
+        exit 1
+    fi
+
+    if [ "$IS_INTEL" -eq 1 ] && [ -w "$TURBO_PATH" ]; then
+        echo "$value" | sudo tee "$TURBO_PATH" > /dev/null
+        if [ "$value" -eq 1 ]; then
+            echo "Intel Turbo Boost ${CYAN}Disabled${RESET}" | tee -a "$LOG_FILE"
+        else
+            echo "Intel Turbo Boost ${CYAN}Enabled${RESET}" | tee -a "$LOG_FILE"
+        fi
+    elif [ "$IS_AMD" -eq 1 ]; then
+        echo "Turbo disable is not directly supported on AMD via no_turbo."
+        echo "Adjusting max frequency instead. Use max_perf_pct or manual tuning."
+    else
+        echo "Intel Turboboost not detected."
+    fi
+}
+
+cleanup() {
+    stop_monitoring
+    exit 0
+}
+
+save_default_cpu_state() {
+    detect_cpu_type
+    if (( IS_INTEL == 1 )); then
+        [[ -f "$TURBO_PATH" ]] && DEFAULT_TURBO=$(<"$TURBO_PATH")
+        [[ -f "$PERF_PATH" ]] && DEFAULT_MAX_PERF=$(<"$PERF_PATH")
+    elif (( IS_AMD == 1 || IS_ARM == 1 )) && [[ ${#PERF_PATHS[@]} -gt 0 ]]; then
+        DEFAULT_FREQS=()
+        for path in "${PERF_PATHS[@]}"; do
+            [[ -f "$path" ]] && DEFAULT_FREQS+=("$(<"$path")")
+        done
+    fi
+}
+
+restore_default_cpu_state() {
+    detect_cpu_type
+    if (( IS_INTEL == 1 )); then
+        [[ -n "$DEFAULT_TURBO" && -w "$TURBO_PATH" ]] && echo "$DEFAULT_TURBO" | sudo tee "$TURBO_PATH" >/dev/null
+        [[ -n "$DEFAULT_MAX_PERF" && -w "$PERF_PATH" ]] && echo "$DEFAULT_MAX_PERF" | sudo tee "$PERF_PATH" >/dev/null
+        echo "${BLUE}Turbo Boost and max_perf_pct restored.${RESET}" | tee -a "$LOG_FILE"
+    elif (( IS_AMD == 1 || IS_ARM == 1 )); then
+        for i in "${!PERF_PATHS[@]}"; do
+            [[ -w "${#PERF_PATHS[@]}=@" ]] && echo "${#DEFAULT_FREQS[@]}" | sudo tee "${#PERF_PATHS[@]}" >/dev/null
+        done
+        echo "${BLUE}CPU: scaling_max_freq restored.${RESET}" | tee -a "$LOG_FILE"
+    fi
+}
+
+
+start_monitoring_loop() {
+    wait_for_config
+    save_default_cpu_state
+    detect_cpu_type
+    load_config
+    touch "$RUN_FLAG"
+    echo $$ > "$PID_FILE"
+
+    last_reload_time=0
+    cooldown_mode=false
+    last_pct=0
+
+    while [ -f "$RUN_FLAG" ]; do
+        now=$EPOCHSECONDS
+    
+        if (( now - last_reload_time >= 7 )); then
+            validate_config
+            min_temp_c=$MIN_TEMP
+            high_temp_c=$MAX_TEMP
+            min_perf_pct=$MIN_PERF_PCT
+            max_perf_pct=$MAX_PERF_PCT
+            ramp_up=$RAMP_UP
+            ramp_down=$RAMP_DOWN
+            hotzone=$HOTZONE
+            perf_span=$((max_perf_pct - min_perf_pct))
+            half_span=$((perf_span / 2))
+            hotzone_delta=$((hotzone - min_temp_c))
+            max_delta=$((high_temp_c - hotzone))
+            last_reload_time=$now
+            
+            if [[ -f "$CONFIG_FILE" ]]; then
+                startup_enabled=0
+                while IFS='=' read -r k v; do
+                    [[ $k == STARTUP_POWERCONTROL ]] && { [[ $v == 1 ]] && startup_enabled=1; break; }
+                done < "$CONFIG_FILE"
+                
+                if (( startup_enabled )); then
+                    if [[ ! -f $CONF_TARGET ]]; then
+                        sudo cp "$CONF_SOURCE" "$CONF_TARGET" 2>/dev/null
+                        printf '%s%(%F %T)T - PowerControl Startup enabled%s\n' "$CYAN" -1 "$RESET" >> "$LOG_FILE"
+                    fi
+                else
+                    if [[ -f $CONF_TARGET ]]; then
+                        sudo rm -f "$CONF_TARGET" 2>/dev/null
+                        printf '%s%(%F %T)T - PowerControl Startup disabled%s\n' "$RED" -1 "$RESET" >> "$LOG_FILE"
+                    fi
+                fi
+
+                if [ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE")" -gt 1048576 ]; then
+                    echo "${CYAN}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) - Truncated log file (exceeded 1MB) ${RESET}" > "$LOG_FILE"
+                fi
+            fi
+        fi
+
+        temp_c=$(get_temp)
+        if [ $? -ne 0 ] || [ -z "$temp_c" ]; then
+            echo "Failed to get temperature. Retrying..."
+            sleep 1
+            continue
+        fi
+
+        if (( temp_c <= min_temp_c )); then
+            target_pct=$max_perf_pct
+        elif (( temp_c < HOTZONE )); then
+            delta_c=$((HOTZONE - min_temp_c))
+            temp_offset=$(( temp_c - min_temp_c ))
+            if (( delta_c > 0 && temp_offset > 0 )); then
+                reduction=$(( (max_perf_pct - min_perf_pct) * temp_offset / (2 * delta_c) ))
+                target_pct=$(( max_perf_pct - reduction ))
+                (( target_pct >= max_perf_pct )) && target_pct=$((max_perf_pct - 1))
+                (( target_pct < min_perf_pct )) && target_pct=$min_perf_pct
+            else
+                target_pct=$((max_perf_pct - 1))
+            fi
+        elif (( temp_c < high_temp_c )); then
+            delta_c=$(( high_temp_c - HOTZONE ))
+            temp_offset=$(( temp_c - HOTZONE ))
+            if (( delta_c > 0 && temp_offset >= 0 )); then
+                reduction_hotzone=$(( (max_perf_pct - min_perf_pct) / 2 ))
+                reduction=$(( reduction_hotzone + ((max_perf_pct - min_perf_pct) * temp_offset / (2 * delta_c)) ))
+                target_pct=$(( max_perf_pct - reduction ))
+                (( target_pct >= max_perf_pct )) && target_pct=$((max_perf_pct - 1))
+                (( target_pct < min_perf_pct )) && target_pct=$min_perf_pct
+            else
+                target_pct=$min_perf_pct
+            fi
+        else
+            target_pct=$min_perf_pct
+        fi
+
+        if (( last_pct < 1 )); then
+            pct=$target_pct
+        elif (( target_pct > last_pct )); then
+            pct=$(( last_pct + ramp_up ))
+            (( pct > target_pct )) && pct=$target_pct
+        elif (( target_pct < last_pct )); then
+            pct=$(( last_pct - ramp_down ))
+            (( pct < target_pct )) && pct=$target_pct
+        else
+            pct=$last_pct
+        fi
+
+         if [[ "$last_pct" != "$pct" ]]; then
+            printf -v ts '%(%Y-%m-%d %H:%M:%S)T' -1
+            echo "${CYAN}${ts} - CPU ${temp_c}°C -> Clockspeed ${pct}%${RESET}" >> "$LOG_FILE"
+        fi
+        
+        set_max_perf_pct "$pct"
+        last_pct=$pct
+
+        sleep "$CPU_POLL"
+    done
+
+    echo "${RED}PowerControl stopped.${RESET}" | tee -a "$LOG_FILE"
+    sudo rm -f "$PID_FILE"
+}
+
+show_status() {
+    detect_cpu_type
+
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        if ps -p "$PID" > /dev/null 2>&1; then
+            echo "${CYAN}"
+            echo "══════════════════════════════════════════════"
+            echo "  PowerControl Status: RUNNING (PID $PID)    "
+        else
+            sudo rm -f "$PID_FILE"
+            sudo rm -f "$RUN_FLAG"
+            echo "${RED}"
+            echo "══════════════════════════════════════════════"
+            echo "        PowerControl Status: STOPPED        "
+        fi
+    else
+        echo "${RED}"
+        echo "══════════════════════════════════════════════"
+        echo "        PowerControl Status: STOPPED       "
+    fi
+
+    temp_c=$(get_temp)
+    echo ""
+    echo "  CPU Temp: $temp_c°C"
+    echo "  Max Temp: $MAX_TEMP°C"
+    echo "  Hotzone: $HOTZONE°C"
+    echo "  Min Temp: $MIN_TEMP°C"
+    echo "  Max CPU %: $MAX_PERF_PCT%" 
+    echo "  Min CPU %: $MIN_PERF_PCT%"
+    echo "  Polling rate: ${CPU_POLL}s"
+    echo "  Ramp Up %: $RAMP_UP%"
+    echo "  Ramp Down %: $RAMP_DOWN%"
+
+if [[ "$IS_INTEL" -eq 1 || "$IS_AMD" -eq 1 ]] && [[ "$PERF_PATH" == *max_perf_pct ]]; then
+        current_val=$(cat "$PERF_PATH")
+        echo "  Current max_perf_pct: $current_val%"
+    elif [[ ${#PERF_PATHS[@]} -gt 0 ]]; then
+        echo "  Current max frequencies:"
+        for path in "${PERF_PATHS[@]}"; do
+            cur_val=$(cat "$path")
+            policy_name=$(basename "$(dirname "$path")")
+            echo "  $policy_name: $((cur_val / 1000)) MHz"
+        done
+    else
+        echo "  ${RESET}${RED}No performance paths found.${RESET}${CYAN}"
+    fi
+
+
+    if [ "$IS_INTEL" -eq 1 ] && [ -f "$TURBO_PATH" ]; then
+        turbo_val=$(cat "$TURBO_PATH")
+        if [[ "$turbo_val" -eq 1 ]]; then
+            echo "  Turbo Boost: Disabled"
+            echo "═════════════════════════════════════════════${RESET}"
+        else
+            echo "  Turbo Boost: Enabled"
+            echo "═════════════════════════════════════════════${RESET}"
+        fi
+    elif [ "$IS_AMD" -eq 1 ]; then
+        echo "═════════════════════════════════════════════${RESET}"
+    else
+        echo "═════════════════════════════════════════════${RESET}"
+    fi
+
+    echo
+}
+
+if [ $# -eq 0 ]; then
+    show_status
+    exit 0
+fi
+
+stop_monitoring() {
+    if [[ -f "$PID_FILE" ]]; then
+        PID=$(<"$PID_FILE")
+        if ps -p "$PID" > /dev/null 2>&1; then
+            restore_default_cpu_state
+            kill -- -"$PID" 2>/dev/null
+            sleep 1
+            kill "$PID" 2>/dev/null 2>/dev/null || true
+            sleep 1
+            kill -9 "$PID" 2>/dev/null || true
+            echo "${RED}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) - PowerControl stopped (PID $PID)${RESET}" | tee -a "$LOG_FILE"
+        fi
+    fi
+    rm -f "$RUN_FLAG" "$PID_FILE"
+}
+
+uninstall_script() {
+    if [ -z "$INSTALL_DIR" ]; then
+        echo "Error: INSTALL_DIR is not set."
+        exit 1
+    fi
+
+    local script="$INSTALL_DIR/Uninstall_ChromeOS_PowerControl.sh"
+
+    if [ -d "$INSTALL_DIR" ]; then
+        if [ -x "$script" ]; then
+            echo "Uninstalling ChromeOS PowerControl..."
+            sudo bash "$script"
+        else
+            echo "${RED}Uninstall script not found or not executable at: $script${RESET}"
+            exit 1
+        fi
+    else
+        echo "${RED}Installation directory not found: $INSTALL_DIR${RESET}"
+        exit 1
+    fi
+}
+
+reinstall_script() {
+    curl -L https://raw.githubusercontent.com/shadowed1/ChromeOS_PowerControl/main/ChromeOS_PowerControl_Installer.sh -o /home/chronos/user/ChromeOS_PowerControl_Installer.sh
+    sudo mkdir -p /usr/local/bin
+    sudo bash /home/chronos/user/ChromeOS_PowerControl_Installer.sh
+    exit 0
+}
+
+show_help() {
+echo "${CYAN}"
+echo "╔═════════════════════════════════════════════════════════════════════════════════════════════════════╗"
+echo "║                                                                                                     ║"
+echo "║                                 PowerControl commands with examples:                                ║"
+echo "║                                                                                                     ║"
+echo "║  powercontrol                    # Show status                                                      ║"
+echo "║  powercontrol all                # Show status of all ChromeOS_PowerControl components              ║"
+echo "║  powercontrol help               # Help menu                                                        ║"
+echo "║  powercontrol help_all           # Global help menu                                                 ║"
+echo "║  powercontrol monitor            # Toggle live temperature monitoring                               ║"
+echo "║  powercontrol gui                # Print commands to install GUI app for Crostini or Chard          ║"
+echo "║  sudo powercontrol start         # Throttle CPU based on temperature curve                          ║"
+echo "║  sudo powercontrol stop          # Restore default CPU settings                                     ║"
+echo "║  sudo powercontrol no_turbo 1    # 0 = Enable, 1 = Disable Turbo Boost                              ║"
+echo "║  sudo powercontrol max 75        # Set max performance percentage                                   ║"
+echo "║  sudo powercontrol min 50        # Set minimum performance at max temp                              ║"
+echo "║  sudo powercontrol max_temp 86   # Max temperature threshold - Limit is 90°C                        ║"
+echo "║  sudo powercontrol min_temp 60   # When below this temperature, CPU allowed to boost to maximum     ║"
+echo "║  sudo powercontrol hotzone 78    # Temperature threshold for aggressive thermal management          ║"
+echo "║  sudo powercontrol ramp_up 15    # % in steps CPU will increase in clockspeed per second            ║"
+echo "║  sudo powercontrol ramp_down 20  # % in steps CPU will decrease in clockspeed per second            ║"
+echo "║  sudo powercontrol hotzone 78    # Temperature threshold for aggressive thermal management          ║"
+echo "║  sudo powercontrol poll 1        # PowerControl polling rate in seconds (0.1s - 5s)                 ║"
+echo "║  sudo powercontrol limits        # See your CPU's boost limits in seconds and Watts (x86_64 only)   ║"
+echo "║  sudo powercontrol startup       # Copy or Remove no_turbo.conf & powercontrol.conf at: /etc/init/  ║"
+echo "║  sudo powercontrol startup_all   # Copy or Remove all .conf files at: /etc/init/                    ║"
+echo "║  sudo powercontrol reinstall     # Redownload and reinstall ChromeOS_PowerControl from Github       ║"
+echo "║  sudo powercontrol start_all     # Start all ChromeOS_PowerControl programs                         ║"
+echo "║  sudo powercontrol uninstall     # Uninstall ChromeOS_PowerControl                                  ║"
+echo "║  sudo powercontrol version       # Check PowerControl version                                       ║"
+echo "║                                                                                                     ║"
+echo "╚═════════════════════════════════════════════════════════════════════════════════════════════════════╝"
+echo "${RESET}"
+}
+
+limits() {
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "x86_64" ]; then
+        sudo find /sys/devices -maxdepth 6 -type d -name power_limits 2>/dev/null | while read -r dir; do
+            echo
+            echo "${RESET}${CYAN}${dir}:"
+            echo
+            for f in "$dir"/*; do
+                [ -f "$f" ] || continue
+                v=$(cat "$f" 2>/dev/null)
+                base=$(basename "$f")
+                if [[ $base == *_uw ]]; then
+                    printf "  %s: %.2f Watts\n" "$base" "$(awk "BEGIN{print $v/1000000}")"
+                elif [[ $base == *_us ]]; then
+                    printf "  %s: %.2f seconds\n" "$base" "$(awk "BEGIN{print $v/1000000}")"
+                else
+                    echo "  $base: $v"
+                fi
+            done
+            echo "${RESET}"
+        done
+    elif [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then
+        echo "${GREEN}$ARCH detected. Skipping power limits (I could not find where they were). ${RESET}"
+    else
+        echo "${RED}Unsupported architecture: $ARCH${RESET}"
+    fi
+}
+
+gui() {
+echo "${RESET}${MAGENTA}${BOLD}"
+echo "GUI app for Crostini (run in Linux): ${RESET}${MAGENTA}"
+echo
+echo "sudo apt update"
+echo "sudo apt install gedit gnome-themes-extra gnome-icon-theme -y"
+echo "sudo curl -fsSL "https://raw.githubusercontent.com/shadowed1/ChromeOS_PowerControl/main/gui.py" -o /bin/powercontrol-gui 2>/dev/null"
+echo "sudo chmod +x /bin/powercontrol-gui 2>/dev/null"
+echo "alias powercontrol-gui='sudo -E powercontrol-gui' "
+echo
+echo "sudo mkdir -p /usr/share/applications/ /usr/share/icons/hicolor/48x48/apps/"
+echo
+echo "cat <<'EOF' | sudo tee /usr/share/applications/powercontrol-gui.desktop > /dev/null"
+echo "[Desktop Entry]"
+echo "Version=1.0"
+echo "Type=Application"
+echo "Name=PowerControl"
+echo "Comment=Get the power to control your CPU, Battery, Fan Curve, GPU, and Sleep for ChromeOS! "
+echo "Exec=/bin/powercontrol-gui"
+echo "Icon=powercontrol"
+echo "Terminal=false"
+echo "Categories=Utility;System; "
+echo "StartupNotify=true"
+echo "EOF"
+echo
+echo "sudo curl -Ls https://github.com/shadowed1/ChromeOS_PowerControl/blob/main/icons/powercontrol_200p.png?raw=true -o /usr/share/icons/hicolor/48x48/apps/powercontrol.png"
+echo "${RESET}"
+echo "${GREEN}${BOLD}GUI app for Chard (run inside ChromeOS shell): ${RESET}${GREEN}"
+echo
+echo "if [[ -n "${CHARD_ROOT:-}" ]]; then"
+echo "    sudo -E curl -fsSL "https://raw.githubusercontent.com/shadowed1/ChromeOS_PowerControl/main/gui.py" -o "$CHARD_ROOT/bin/powercontrol-gui" 2>/dev/null"
+echo "    sudo chmod +x "$CHARD_ROOT/bin/powercontrol-gui" 2>/dev/null"
+echo
+echo "    sudo mkdir -p $CHARD_ROOT/usr/share/applications/ $CHARD_ROOT/usr/share/icons/hicolor/48x48/apps/"
+echo
+echo "    cat <<'EOF' | sudo tee $CHARD_ROOT/usr/share/applications/powercontrol-gui.desktop > /dev/null"
+echo "[Desktop Entry]"
+echo "Version=1.0"
+echo "Type=Application"
+echo "Name=PowerControl"
+echo "Comment=Get the power to control your CPU, Battery, Fan Curve, GPU, and Sleep for ChromeOS! "
+echo "Exec=/bin/powercontrol-gui"
+echo "Icon=powercontrol"
+echo "Terminal=false"
+echo "Categories=Utility;System; "
+echo "StartupNotify=true"
+echo "EOF"
+echo
+echo "    sudo curl -Ls https://github.com/shadowed1/ChromeOS_PowerControl/blob/main/icons/powercontrol_200p.png?raw=true -o $CHARD_ROOT/usr/share/icons/hicolor/48x48/apps/powercontrol.png"
+echo "fi"
+echo "${RESET}"
+}
+
+max_perf_pct() {
+    local intel_path="/sys/devices/system/cpu/intel_pstate/max_perf_pct"
+    local policy_paths=()
+
+    for p in /sys/devices/system/cpu/cpufreq/policy*/max_perf_pct; do
+        [[ -f "$p" ]] && policy_paths+=("$p")
+    done
+
+    if [[ -z "$2" ]]; then
+        if [[ -f "$intel_path" ]]; then
+            val=$(cat "$intel_path")
+            echo "  intel_pstate: $val%"
+        fi
+
+        if [[ ${#policy_paths[@]} -gt 0 ]]; then
+            echo "  Per-policy max_perf_pct:"
+            for path in "${policy_paths[@]}"; do
+                val=$(cat "$path")
+                policy=$(basename "$(dirname "$path")")
+                echo "  $policy: $val%"
+            done
+        elif [[ "$IS_ARM" -eq 1 ]]; then
+            echo "  Per-policy scaling_max_freq:"
+            for path in /sys/devices/system/cpu/cpufreq/policy*/scaling_max_freq; do
+                [[ -f "$path" ]] || continue
+                freq_khz=$(cat "$path")
+                freq_mhz=$((freq_khz / 1000))
+                policy=$(basename "$(dirname "$path")")
+                echo "  $policy: ${freq_mhz} MHz"
+            done
+        else
+            echo "${RED}No max_perf_pct or scaling_max_freq paths found.${RESET}"
+        fi
+        return
+    fi
+
+    if ! [[ "$2" =~ ^[0-9]+$ ]]; then
+        echo "${RED}Error: max_perf_pct value must be an integer.${RESET}"
+        exit 1
+    fi
+
+    if (( $2 < 10 || $2 > 100 )); then
+        echo "${RED}Error: max_perf_pct must be between 10 and 100.${RESET}"
+        exit 1
+    fi
+
+    MAX_PERF_PCT=$2
+    save_config
+
+    echo ""
+    echo "${CYAN}Maximum performance percentage set to $MAX_PERF_PCT%${RESET}" | tee -a "$LOG_FILE"
+    echo ""
+}
+
+
+case "$1" in
+   start)
+        if [ ! -f "$CONFIG_FILE" ]; then
+            echo "${CYAN}Initializing config file with default values...${RESET}"
+            detect_cpu_type
+            load_config
+        fi
+    
+        stop_monitoring >/dev/null 2>&1
+        
+        if pgrep -f "$0 __powercontrol_monitor__" >/dev/null; then
+            echo "${YELLOW}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) - PowerControl is already running.${RESET}" | tee -a "$LOG_FILE"
+        else
+            nohup "$0" __powercontrol_monitor__ >> "$LOG_FILE" 2>&1 &
+            echo $! > "$PID_FILE"
+            echo "${CYAN}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) - Starting PowerControl - Output is logged to $LOG_FILE${RESET}"
+        fi
+    ;;
+
+    stop)
+        stop_monitoring
+    ;;
+    max_temp)
+        set_temp_threshold "$2"
+    ;;
+    min_temp)
+        set_min_temp "$2"
+    ;;
+    min_perf_pct|min)
+        set_min_perf_pct "$2"
+    ;;
+    max_perf_pct|max)
+        max_perf_pct "$@"
+    ;;
+    no_turbo)
+        set_no_turbo "$2"
+    ;;
+    uninstall)
+        uninstall_script
+    ;;
+    --h|-h|h|--help|-help|help)
+        show_help
+    ;;
+    monitor|mon)
+       tail -f /var/log/powercontrol.log
+    ;;
+    startup)
+        CONF_SOURCE="$INSTALL_DIR/powercontrol.conf"
+        CONF_TARGET="/etc/init/powercontrol.conf"
+        CONF_SOURCE_NO_TURBO="$INSTALL_DIR/no_turbo.conf"
+        
+        if [ "$IS_INTEL" -eq 1 ]; then
+            read -p "Do you want to disable Turbo Boost automatically on startup? (Y/n): " choice
+            if [[ "$choice" =~ ^[Yy]$ ]]; then
+                if [ -f "$CONF_SOURCE_NO_TURBO" ]; then
+                    echo "Copying no_turbo.conf to /etc/init/..."
+                    sudo cp "$CONF_SOURCE_NO_TURBO" "/etc/init/"
+                    echo "${CYAN}no_turbo.conf copied.${RESET}"
+                else
+                    echo "Intel Turbo Boost will start automatically."
+                    sudo rm -f /etc/init/no_turbo.conf 2>/dev/null
+                fi
+            else
+                echo "Intel Turbo Boost enabled on startup."
+                sudo rm -r /etc/init/no_turbo.conf 2>/dev/null
+            fi
+        fi
+    
+        read -p "Do you want PowerControl to startup automatically on boot? (Y/n): " choice
+        if [[ "$choice" =~ ^[Yy]$ ]]; then
+            if [ -f "$CONF_SOURCE" ]; then
+                echo "Copying powercontrol.conf to /etc/init/..."
+                sudo cp "$CONF_SOURCE" "$CONF_TARGET"
+                echo "${CYAN}powercontrol.conf copied.${RESET}"
+            else
+                echo "${RED}powercontrol.conf not found at $CONF_SOURCE${RESET}"
+            fi
+        else
+            echo "PowerControl will not startup automatically on boot."
+            sudo rm -f /etc/init/powercontrol.conf
+        fi
+    ;;
+    ramp_up)
+        if [[ "$2" =~ ^[0-9]+$ ]]; then
+            if (( $2 < 1 || $2 > 100 )); then
+                echo "Error: ramp_up must be between 1 and 100"
+                exit 1
+            fi
+            sed -i "s/^RAMP_UP=.*/RAMP_UP=$2/" "$CONFIG_FILE"
+            echo "ramp_up set to $2%"
+        else
+            echo "Error: ramp_up must be between 1 and 100"
+            exit 1
+        fi
+    ;;
+    ramp_down)
+        if [[ "$2" =~ ^[0-9]+$ ]]; then
+            if (( $2 < 1 || $2 > 100 )); then
+                echo "Error: ramp_down must be between 1 and 100"
+                exit 1
+            fi
+            sed -i "s/^RAMP_DOWN=.*/RAMP_DOWN=$2/" "$CONFIG_FILE"
+            echo "ramp_down set to $2%"
+        else
+            echo "Error: ramp_down must be between 1 and 100"
+            exit 1
+        fi
+    ;;
+    hotzone)
+        if [[ "$2" =~ ^[0-9]+$ ]]; then
+            if (( $2 < 60 || $2 > 90 )); then
+                echo "Error: hotzone must be between 60°C and 90°C"
+                exit 1
+            fi
+            sed -i "s/^HOTZONE=.*/HOTZONE=$2/" "$CONFIG_FILE"
+            echo "${CYAN}"
+            echo "Hotzone set to $2°C"
+            echo "${RESET}"   
+        else
+            echo "Error: hotzone must be between 60°C and 90°C"
+            exit 1
+        fi
+    ;;
+    poll | cpu_poll)
+        if [[ "$2" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            CPU_POLL=$(printf "%.2f" "$2")
+            if (( $(awk "BEGIN {print ($CPU_POLL < 0.1)}") )); then
+                echo "${RED}Warning: CPU_POLL below 0.1s, resetting to 0.1s${RESET}"
+                CPU_POLL=0.1
+            elif (( $(awk "BEGIN {print ($CPU_POLL > 5)}") )); then
+                echo "${RED}Warning: CPU_POLL above 5s, resetting to 5s${RESET}"
+                CPU_POLL=5
+            fi
+            sed -i "s/^CPU_POLL=.*/CPU_POLL=$CPU_POLL/" "$CONFIG_FILE"
+            echo "${CYAN}PowerControl polling rate set to $CPU_POLL seconds${RESET}"
+        else
+            echo "Error: cpu_poll must be a number between 0.1 and 5 (0.5, 1.2, 2.0, etc)"
+            exit 1
+        fi
+    ;;
+    version)
+        if [[ -f "$VERSION_FILE" ]]; then
+            CURRENT_VER=$(cat "$INSTALL_DIR/version")
+            CURRENT_VER_NO=$(echo "$CURRENT_VER" | sed -e 's/VERSION=//' -e 's/"//g' -e 's/\.//g' -e 's/^0*//')
+    
+            LATEST_VER=$(curl -Ls https://raw.githubusercontent.com/shadowed1/ChromeOS_PowerControl/main/version)
+            LATEST_VER_NO=$(echo "$LATEST_VER" | sed -e 's/VERSION=//' -e 's/"//g' -e 's/\.//g' -e 's/^0*//')
+    
+            if (( 10#$CURRENT_VER_NO < 10#$LATEST_VER_NO )); then
+                echo "${CYAN}You're using $CURRENT_VER which is NOT the latest version."
+                echo "${BOLD}"
+                read -rp "Would you like to 'reinstall' to get $LATEST_VER ? (Y/n): " choice
+                choice=${choice:-Y}
+                if [[ "$choice" =~ ^[Yy]$ ]]; then
+                    echo "${RESET}${GREEN}Reinstalling!${RESET}"
+                    bash <(curl -s "https://raw.githubusercontent.com/shadowed1/ChromeOS_PowerControl/main/Reinstall_ChromeOS_PowerControl.sh?$(date +%s)")
+                else
+                    echo "${RED}Skipping reinstall.${RESET}"
+                fi
+            else
+                echo "${CYAN}You're using $CURRENT_VER which is up-to-date, so you're good.${RESET}"
+            fi
+        else
+            echo "${RED}Version file not found.${RESET}"
+            exit 1
+        fi
+    ;;
+    reinstall)
+        reinstall_script
+    ;;
+    __powercontrol_monitor__)
+        LOG_FILE="/var/log/powercontrol.log"
+        start_monitoring_loop
+    ;;
+    all)
+        "$INSTALL_DIR/powercontrol" && "$INSTALL_DIR/batterycontrol" && "$INSTALL_DIR/fancontrol" && "$INSTALL_DIR/gpucontrol" && "$INSTALL_DIR/sleepcontrol"
+    ;;
+    startup_all)
+        sudo "$INSTALL_DIR/powercontrol" startup && sudo "$INSTALL_DIR/batterycontrol" startup && sudo "$INSTALL_DIR/fancontrol" startup && sudo "$INSTALL_DIR/gpucontrol" startup && sudo "$INSTALL_DIR/sleepcontrol" startup
+    ;;
+    start_all)
+        sudo "$INSTALL_DIR/powercontrol" start && sudo "$INSTALL_DIR/batterycontrol" start && sudo "$INSTALL_DIR/sleepcontrol" start && sudo "$INSTALL_DIR/fancontrol" start && sudo "$INSTALL_DIR/gpucontrol" start
+    ;;
+    stop_all)
+        sudo "$INSTALL_DIR/powercontrol" stop && sudo "$INSTALL_DIR/batterycontrol" stop && sudo "$INSTALL_DIR/sleepcontrol" stop && sudo "$INSTALL_DIR/fancontrol" stop && sudo "$INSTALL_DIR/gpucontrol" stop
+    ;;
+    help_all)
+        "$INSTALL_DIR/powercontrol" help && "$INSTALL_DIR/batterycontrol" help && "$INSTALL_DIR/fancontrol" help && "$INSTALL_DIR/gpucontrol" help && "$INSTALL_DIR/sleepcontrol" help
+    ;;
+    gui)
+        gui
+    ;;
+    limits|limit)
+        limits
+    ;;
+    *)
+        echo "Unknown command: $1"
+        show_help
+    ;;
+esac
