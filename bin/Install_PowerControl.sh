@@ -41,8 +41,6 @@ detect_cpu_type() {
     esac
 }
 
-
-
 INSTALL_DIR="/usr/local/bin/PowerControl"
 DEFAULT_INSTALL_DIR="/usr/local/bin/PowerControl"
 
