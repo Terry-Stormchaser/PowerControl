@@ -47,7 +47,7 @@ wait_for_config() {
 }
 
 wait_for_config
-if ! ( [[ -z "$1" ]] || [[ "$1" == "--h" || "$1" == "-h" || "$1" == "help_all" || "$1" == "h" || "$1" == "--help" || "$1" == "-help" || "$1" == "all" || "$1" == "help" || "$1" == "monitor" || "$1" == "mon" || "$1" == "gui" || "$1" == "reinstall" || "$1" == "status" ]] ) && [[ "$(id -u)" -ne 0 ]]; then
+if ! ( [[ -z "$1" ]] || [[ "$1" == "--h" || "$1" == "-h" || "$1" == "help_all" || "$1" == "h" || "$1" == "--help" || "$1" == "-help" || "$1" == "help" || "$1" == "monitor" || "$1" == "mon" || "$1" == "reinstall" || "$1" == "status" ]] ) && [[ "$(id -u)" -ne 0 ]]; then
     echo "${RED}PowerControl requires sudo to run.${RESET}"
     echo "  Try: sudo powercontrol $*  or  sudo $0 $*"
     exit 1
@@ -689,58 +689,7 @@ limits() {
     fi
 }
 
-gui() {
-echo "${RESET}${MAGENTA}${BOLD}"
-echo "GUI app for Crostini (run in Linux): ${RESET}${MAGENTA}"
-echo
-echo "sudo apt update"
-echo "sudo apt install gedit gnome-themes-extra gnome-icon-theme -y"
-echo "sudo curl -fsSL "https://raw.githubusercontent.com/shadowed1/ChromeOS_PowerControl/main/gui.py" -o /bin/powercontrol-gui 2>/dev/null"
-echo "sudo chmod +x /bin/powercontrol-gui 2>/dev/null"
-echo "alias powercontrol-gui='sudo -E powercontrol-gui' "
-echo
-echo "sudo mkdir -p /usr/share/applications/ /usr/share/icons/hicolor/48x48/apps/"
-echo
-echo "cat <<'EOF' | sudo tee /usr/share/applications/powercontrol-gui.desktop > /dev/null"
-echo "[Desktop Entry]"
-echo "Version=1.0"
-echo "Type=Application"
-echo "Name=PowerControl"
-echo "Comment=Get the power to control your CPU, Battery, Fan Curve, GPU, and Sleep for ChromeOS! "
-echo "Exec=/bin/powercontrol-gui"
-echo "Icon=powercontrol"
-echo "Terminal=false"
-echo "Categories=Utility;System; "
-echo "StartupNotify=true"
-echo "EOF"
-echo
-echo "sudo curl -Ls https://github.com/shadowed1/ChromeOS_PowerControl/blob/main/icons/powercontrol_200p.png?raw=true -o /usr/share/icons/hicolor/48x48/apps/powercontrol.png"
-echo "${RESET}"
-echo "${GREEN}${BOLD}GUI app for Chard (run inside ChromeOS shell): ${RESET}${GREEN}"
-echo
-echo "if [[ -n "${CHARD_ROOT:-}" ]]; then"
-echo "    sudo -E curl -fsSL "https://raw.githubusercontent.com/shadowed1/ChromeOS_PowerControl/main/gui.py" -o "$CHARD_ROOT/bin/powercontrol-gui" 2>/dev/null"
-echo "    sudo chmod +x "$CHARD_ROOT/bin/powercontrol-gui" 2>/dev/null"
-echo
-echo "    sudo mkdir -p $CHARD_ROOT/usr/share/applications/ $CHARD_ROOT/usr/share/icons/hicolor/48x48/apps/"
-echo
-echo "    cat <<'EOF' | sudo tee $CHARD_ROOT/usr/share/applications/powercontrol-gui.desktop > /dev/null"
-echo "[Desktop Entry]"
-echo "Version=1.0"
-echo "Type=Application"
-echo "Name=PowerControl"
-echo "Comment=Get the power to control your CPU, Battery, Fan Curve, GPU, and Sleep for ChromeOS! "
-echo "Exec=/bin/powercontrol-gui"
-echo "Icon=powercontrol"
-echo "Terminal=false"
-echo "Categories=Utility;System; "
-echo "StartupNotify=true"
-echo "EOF"
-echo
-echo "    sudo curl -Ls https://github.com/shadowed1/ChromeOS_PowerControl/blob/main/icons/powercontrol_200p.png?raw=true -o $CHARD_ROOT/usr/share/icons/hicolor/48x48/apps/powercontrol.png"
-echo "fi"
-echo "${RESET}"
-}
+
 
 max_perf_pct() {
     local intel_path="/sys/devices/system/cpu/intel_pstate/max_perf_pct"
@@ -985,9 +934,6 @@ case "$1" in
     ;;
     help_all)
         "$INSTALL_DIR/powercontrol" help && "$INSTALL_DIR/batterycontrol" help && "$INSTALL_DIR/fancontrol" help && "$INSTALL_DIR/gpucontrol" help && "$INSTALL_DIR/sleepcontrol" help
-    ;;
-    gui)
-        gui
     ;;
     limits|limit)
         limits
