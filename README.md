@@ -5,10 +5,13 @@ Open Terminal, copy paste, and run:
  <pre>bash <(curl -s "https://raw.githubusercontent.com/shadowed1/PowerControl/main/bin/Download_PowerControl.sh?$(date +%s)")</pre>
 
 ### Supports all Intel, AMD, and ARM64 (including Apple) CPU's!
+### Supports Intel, AMD, Mediatek, Qualcomm, GPU's! 
 
 __How It Works:__
 
 <br>
+
+*PowerControl:*
 
 - Uses ARM, AMD, and Intel's max_perf_pct for easy user control.
 - Pairs user adjustable max_perf_pct and thermal0 temp sensors to create a user adjustable clockspeed-temperature curve. 
@@ -18,6 +21,18 @@ __How It Works:__
 - Editable clockspeed ramp-up and ramp-down feature; emulating modern AMD thermal behavior for Intel + ARM.
 - Alter the clockspeed-temperature curve to be more aggressive/passive using hotzone variable.
 <br>
+
+*GPUControl:*
+
+- Identifies the GPU (AMD, Adreno, Mali, and Intel) based on the name of the device's path in /sys/class/
+- Limits control to only below the maximum clock speed for safety and with Chromebooks in mind.
+- ChromeOS has built-in overclock prevention, so these safety precautions are just extra guardrails.
+- Altering GPU clockspeed in real-time is a useful tool to debug performance. 
+- Intel GPU's maximum clock speed changed from: /sys/class/drm/card0/gt_max_freq_mhz
+- AMD GPU's maximum clockspeed changed from: /sys/class/drm/card0/pp_od_clk_voltage
+- Adreno GPU's maximum clockspeed changed from /sys/class/kgsl/kgsl-3d0/max_gpuclk
+- Mali GPU's maximum clockspeed changed from: /sys/class/devfreq/mali0/max_freq
+
 
 __PowerControl commands with examples:__                                
                                                                                                      
@@ -43,3 +58,15 @@ __PowerControl commands with examples:__
   `sudo powercontrol reinstall     # Redownload and reinstall PowerControl from Github`       
   `sudo powercontrol uninstall     # Uninstall PowerControl`                                  
   `sudo powercontrol version       # Check PowerControl version`        
+<br><br>
+
+  __GPUControl commands with examples:__                                       
+                                                                                                                  
+  `gpucontrol                     # Show current GPU info and frequency`                                            
+  `gpucontrol help                # Show this help menu`         
+  `gpucontrol monitor             # Monitor GPU clockspeed in real-time.`        
+  `sudo gpucontrol restore        # Restore GPU max frequency to original value`                                         
+  `sudo gpucontrol 800            # Set GPU max frequency to 800 MHz`            
+  `sudo gpucontrol startup        # Enable or disable GPUControl on startup`        
+  <br><br>
+  
