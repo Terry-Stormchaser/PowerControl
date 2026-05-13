@@ -1,0 +1,551 @@
+#!/bin/bash
+RED=$(tput setaf 1)
+GREEN=$(tput setaf 2)
+YELLOW=$(tput setaf 3)
+BLUE=$(tput setaf 4)
+MAGENTA=$(tput setaf 5)
+CYAN=$(tput setaf 6)
+BOLD=$(tput bold)
+RESET=$(tput sgr0)
+LOG_FILE="/var/log/gpucontrol.log"
+INSTALL_DIR="@INSTALL_DIR@"
+if [ -d "/home/chronos/user/MyFiles/Downloads" ]; then
+    CONFIG_FILE="/home/chronos/user/MyFiles/Downloads/ChromeOS_PowerControl_Config/config"
+else
+    CONFIG_FILE="/usr/local/bin/ChromeOS_PowerControl_Config/config"
+fi
+GPU_MAX_FREQ=
+ORIGINAL_GPU_MAX_FREQ=
+timestamp=$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1)
+RUN_FLAG="$INSTALL_DIR/.gpucontrol_enabled"
+PID_FILE="$INSTALL_DIR/.gpucontrol_pid"
+CONF_SOURCE="$INSTALL_DIR/gpucontrol.conf"
+CONF_TARGET="/etc/init/gpucontrol.conf"
+
+wait_for_config() {
+    local config_dir="/home/chronos/user/MyFiles/Downloads/ChromeOS_PowerControl_Config"
+    local max_wait=300
+    local elapsed=0
+    
+    while [ $elapsed -lt $max_wait ]; do
+        if [ -f "$CONFIG_FILE" ]; then
+            return 0
+        fi
+        
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+    
+    echo "${RED}Error: Config file not available after 5 minutes${RESET}" | tee -a "$LOG_FILE"
+    return 1
+}
+wait_for_config
+
+if ! ( [[ -z "$1" ]] || [[ "$1" =~ ^(-h|--h|h|--help|-help|help|status|start|stop|monitor|mon|__gpucontrol_monitor__)$ ]] ) \
+   && [[ "$(id -u)" -ne 0 ]]; then
+    echo "${RED}GPUControl requires sudo to run.${RESET}"
+    echo "  Try: sudo gpucontrol $*  or  sudo $0 $*"
+    exit 0
+fi
+
+load_config() {
+    if [ -f "$CONFIG_FILE" ]; then
+        source "$CONFIG_FILE" 2>/dev/null
+    fi
+    validate_config
+}
+
+validate_config() {
+    if [[ -z "$GPU_MAX_FREQ" || ! "$GPU_MAX_FREQ" =~ ^[0-9]+$ ]]; then
+        GPU_MAX_FREQ=$ORIGINAL_GPU_MAX_FREQ
+    fi
+    if (( GPU_MAX_FREQ > ORIGINAL_GPU_MAX_FREQ )); then
+        GPU_MAX_FREQ=$ORIGINAL_GPU_MAX_FREQ
+    fi
+}
+
+save_config() {
+    validate_config
+    if [[ -f "$CONFIG_FILE" ]]; then
+        if grep -q "^GPU_MAX_FREQ=" "$CONFIG_FILE"; then
+            sed -i "s/^GPU_MAX_FREQ=.*/GPU_MAX_FREQ=$GPU_MAX_FREQ/" "$CONFIG_FILE"
+        else
+            echo "GPU_MAX_FREQ=$GPU_MAX_FREQ" >> "$CONFIG_FILE"
+        fi
+    fi
+}
+
+if [[ "$1" != "__gpucontrol_monitor__" ]]; then
+    if [[ -f "$CONFIG_FILE" ]]; then
+        source "$CONFIG_FILE" 2>/dev/null
+        load_config
+    fi
+
+    if ! [[ "$ORIGINAL_GPU_MAX_FREQ" =~ ^[0-9]+$ ]]; then
+        echo ""
+        echo "${RED}Error: Could not verify original max GPU frequency. Aborting.${RESET}"
+        echo ""
+        exit 0
+    fi
+fi
+
+amd_set_max_freq() {
+    local requested_freq="$1"
+    local pp_od_file="$PP_OD_FILE"
+
+    if (( requested_freq > ORIGINAL_GPU_MAX_FREQ )); then
+        echo "${RED}Error: Requested frequency ($requested_freq MHz) exceeds original maximum ($ORIGINAL_GPU_MAX_FREQ MHz).${RESET}"
+        exit 0
+    fi
+
+    if [[ -z "$pp_od_file" || ! -w "$pp_od_file" ]]; then
+        echo "${RED}Error: Cannot write to pp_od_clk_voltage. Is the path valid and writable?${RESET}"
+        exit 0
+    fi
+
+    local states_raw
+    states_raw=$(grep '^s ' "$pp_od_file")
+    if [[ -z "$states_raw" ]]; then
+        echo "${RED}Error: Could not read current pp_od_clk_voltage states.${RESET}"
+        exit 0
+    fi
+
+    local target_index
+    if [[ "$AMD_SELECTED_SCLK_INDEX" =~ ^[0-9]+$ ]]; then
+        target_index="$AMD_SELECTED_SCLK_INDEX"
+    else
+        target_index=$(echo "$states_raw" | tail -n1 | awk '{print $2}')
+    fi
+
+    local new_cmd=""
+    while read -r _ idx freq volt; do
+        if [[ "$idx" == "$target_index" ]]; then
+            freq="$requested_freq"
+        fi
+        new_cmd+="s $idx $freq $volt\n"
+    done <<< "$states_raw"
+    echo ""
+    printf -v new_cmd_expanded "%b" "$new_cmd"
+    echo -e "$new_cmd_expanded" > "$pp_od_file" 2>/dev/null
+    echo "c" > "$pp_od_file" 2>/dev/null
+    GPU_MAX_FREQ="$requested_freq"
+    save_config
+    echo ""
+}
+
+get_current_freq() {
+    case "$1" in
+        intel|mali|adreno)
+            if [[ -f "$GPU_FREQ_PATH" ]]; then
+                read -r freq 2>/dev/null < "$GPU_FREQ_PATH" && echo "$freq" || echo "Unavailable"
+            else
+                echo "Unavailable"
+            fi
+            ;;
+        amd)
+            if [[ -f "$GPU_FREQ_PATH" ]]; then
+                while read -r a b _; do
+                    [[ "$a" == "*" ]] && echo "$b" && return
+                done < "$GPU_FREQ_PATH"
+                echo "Unavailable"
+            else
+                echo "Unavailable"
+            fi
+            ;;
+        *)
+            echo ""
+            echo "Unsupported GPU type"
+            echo ""
+            ;;
+    esac
+}
+
+start_monitoring_loop() {
+    wait_for_config
+    touch "$RUN_FLAG"
+    echo $$ > "$PID_FILE"
+
+    echo "${MAGENTA}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) - GPUControl started (PID $$)${RESET}" | tee -a "$LOG_FILE"
+
+    local last_reload=0
+    local config_loaded=0
+    local last_gpu_freq=0
+    local config_check_interval=5
+
+    while true; do
+        [[ ! -f "$RUN_FLAG" ]] && {
+            echo "${RED}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) - GPUControl stopped${RESET}" | tee -a "$LOG_FILE"
+            sudo rm -f "$PID_FILE"
+            exit 0
+        }
+
+        local now=$EPOCHSECONDS
+        
+        if (( now - last_reload >= config_check_interval )); then
+            if [[ -f "$CONFIG_FILE" ]]; then
+                source "$CONFIG_FILE" 2>/dev/null
+                load_config
+                
+                if [[ "$ORIGINAL_GPU_MAX_FREQ" =~ ^[0-9]+$ ]] && [[ -n "$GPU_TYPE" ]]; then
+                    if (( config_loaded == 0 )); then
+                        echo "${MAGENTA}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) - Configuration loaded successfully${RESET}" | tee -a "$LOG_FILE"
+                        config_loaded=1
+                    fi
+                    
+                    if (( GPU_MAX_FREQ != last_gpu_freq )); then
+                        apply_gpu_settings
+                        last_gpu_freq=$GPU_MAX_FREQ
+                    fi
+                else
+                    if (( config_loaded == 0 )); then
+                        echo "${YELLOW}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) - Waiting for valid GPU configuration...${RESET}" | tee -a "$LOG_FILE"
+                    fi
+                fi
+
+                if [[ -f "$LOG_FILE" ]] && [[ $(stat -c%s "$LOG_FILE") -gt 1048576 ]]; then
+                    echo "${MAGENTA}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) - Log truncated - Exceeded 1MB ${RESET}" | tee -a "$LOG_FILE"
+                fi
+            else
+                if (( config_loaded == 0 )); then
+                    echo "${YELLOW}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) - Waiting for config file: $CONFIG_FILE${RESET}" >> "$LOG_FILE"
+                fi
+            fi
+            
+            last_reload=$now
+            
+            if [[ -f "$CONFIG_FILE" ]]; then
+                local startup_enabled=0
+                if grep -q '^STARTUP_GPUCONTROL=1' "$CONFIG_FILE" 2>/dev/null; then
+                    startup_enabled=1
+                fi
+        
+                if (( startup_enabled )); then
+                    [[ ! -f "$CONF_TARGET" ]] && {
+                        sudo cp "$CONF_SOURCE" "$CONF_TARGET" 2>/dev/null
+                        printf '%s%(%F %T)T - GPUControl Startup enabled%s\n' "$MAGENTA" -1 "$RESET" | tee -a "$LOG_FILE"
+                    }
+                else
+                    [[ -f "$CONF_TARGET" ]] && {
+                        sudo rm -f "$CONF_TARGET" 2>/dev/null
+                        printf '%s%(%F %T)T - GPUControl Startup disabled%s\n' "$RED" -1 "$RESET" | tee -a "$LOG_FILE"
+                    }
+                fi
+            fi
+        fi
+
+        sleep 1
+    done
+}
+
+stop_monitoring() {
+    if [[ -f "$PID_FILE" ]]; then
+        if read -r PID < "$PID_FILE"; then
+            if ps -p "$PID" > /dev/null 2>&1; then
+                kill "$PID" 2>/dev/null
+            fi
+        fi
+        sudo rm -f "$PID_FILE"
+    fi
+
+    sudo rm -f "$RUN_FLAG"
+}
+
+apply_gpu_settings() {
+    if [[ ! "$ORIGINAL_GPU_MAX_FREQ" =~ ^[0-9]+$ ]] || [[ -z "$GPU_TYPE" ]]; then
+        return
+    fi
+
+    case "$GPU_TYPE" in
+        intel)
+            [[ -w "$GPU_FREQ_PATH" ]] && printf '%s\n' "$GPU_MAX_FREQ" | sudo tee "$GPU_FREQ_PATH" > /dev/null 2>&1
+            ;;
+        mali|adreno)
+            printf '%s\n' "$GPU_MAX_FREQ" | sudo tee "$GPU_FREQ_PATH" > /dev/null 2>&1
+            ;;
+        amd)
+            amd_set_max_freq "$GPU_MAX_FREQ"
+            ;;
+    esac
+}
+
+clockspeed() {
+    local GPU_DIR="${GPU_FREQ_PATH%/*}"
+    local CUR_FREQ_FILE
+    CUR_FREQ_FILE=$(ls "$GPU_DIR"/*cur_freq* 2>/dev/null | head -n 1)
+
+    if [[ -z "$CUR_FREQ_FILE" || ! -f "$CUR_FREQ_FILE" ]]; then
+        echo "No file matching '*cur_freq*' found in $GPU_DIR"
+        exit 1
+    fi
+
+    echo "${MAGENTA}Ctrl-C to exit"
+
+    while true; do
+        if [[ -f "$CUR_FREQ_FILE" ]]; then
+            local TIMESTAMP=$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1)
+            local FREQ
+
+            if read -r FREQ < "$CUR_FREQ_FILE"; then
+                local FREQ_MHZ
+                if [[ "$GPU_TYPE" == "intel" || "$GPU_TYPE" == "amd" ]]; then
+                    FREQ_MHZ="$FREQ"
+                else
+                    FREQ_MHZ=$((FREQ / 1000000))
+                fi
+                echo "$TIMESTAMP: $FREQ_MHZ MHz"
+            fi
+        else
+            break
+        fi
+        sleep 1
+    done
+
+    echo "${RESET}"
+}
+
+monitor() {
+    tail -f "$LOG_FILE"
+}
+
+help() {
+    echo "${MAGENTA}"
+    echo "╔══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗"
+    echo "║                                                                                                                  ║"
+    echo "║                                         GPUControl commands with examples:                                       ║"
+    echo "║                                                                                                                  ║"
+    echo "║  gpucontrol                     # Show current GPU info and frequency                                            ║"
+    echo "║  gpucontrol help                # Show help menu                                                                 ║"
+    echo "║  gpucontrol monitor             # Monitor GPU clockspeed in real-time                                            ║"
+    echo "║  sudo gpucontrol start          # Start GPUControl                                                               ║"
+    echo "║  sudo gpucontrol stop           # Stop GPUControl                                                                ║"
+    echo "║  sudo gpucontrol restore        # Restore GPU max frequency to original value                                    ║"
+    echo "║  sudo gpucontrol 800            # Set GPU max frequency to 800 MHz                                               ║"
+    echo "║  sudo gpucontrol startup        # Enable or disable GPUControl on startup                                        ║"
+    echo "║                                                                                                                  ║"
+    echo "╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝"
+    echo "${RESET}"
+}
+
+case "$1" in
+    --h|-h|h|--help|-help|help)
+        help
+        exit 0
+        ;;
+__gpucontrol_monitor__)
+        start_monitoring_loop
+        exit 0
+        ;;
+    start)
+        stop_monitoring >/dev/null 2>&1
+        echo "${MAGENTA}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) - Starting GPUControl - Output is logged to $LOG_FILE${RESET}" | tee -a "$LOG_FILE"
+        nohup "$0" __gpucontrol_monitor__ >> "$LOG_FILE" 2>&1 &
+        exit 0
+        ;;
+    stop)
+        stop_monitoring
+        echo "${RED}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) - GPUControl stopped${RESET}" | tee -a "$LOG_FILE"
+        exit 0
+        ;;
+    restore)
+        echo "${MAGENTA}Restoring GPU to original max frequency...${RESET}"
+        case "$GPU_TYPE" in
+            intel|adreno|mali)
+                [[ -w "$GPU_FREQ_PATH" ]] && printf '%s\n' "$ORIGINAL_GPU_MAX_FREQ" | sudo tee "$GPU_FREQ_PATH" > /dev/null 2>&1
+                ;;
+            amd)
+                amd_set_max_freq "$ORIGINAL_GPU_MAX_FREQ"
+                ;;
+            *)
+                echo "${RED}Restore not supported for GPU type: $GPU_TYPE${RESET}"
+                exit 1
+                ;;
+        esac
+        echo ""
+        echo "${MAGENTA}GPU frequency restored to original: $ORIGINAL_GPU_MAX_FREQ${RESET}"
+        echo ""
+        exit 0
+        ;;
+    monitor|mon)
+        clockspeed
+        ;;
+    startup)
+        CONF_SOURCE="$INSTALL_DIR/gpucontrol.conf"
+        CONF_TARGET="/etc/init/gpucontrol.conf"
+        read -p "Enable GPUControl on startup? (y/n): " choice
+        if [[ "$choice" =~ ^[Yy]$ ]]; then
+            sudo cp "$CONF_SOURCE" "$CONF_TARGET"
+            echo "${MAGENTA}Startup enabled.${RESET}"
+        else
+            sudo rm -f "$CONF_TARGET" 2>/dev/null
+            echo "${RED}Startup disabled.${RESET}"
+        fi
+        exit 0
+        ;;
+esac
+
+if [[ $# -eq 0 ]]; then
+    RUNNING=0
+    if [[ -f "$PID_FILE" ]]; then
+        if read -r PID < "$PID_FILE" && ps -p "$PID" > /dev/null 2>&1; then
+            RUNNING=1
+        fi
+    fi
+
+    if (( RUNNING )); then
+        COLOR="$MAGENTA"
+        STATE_TEXT="GPUControl Status: RUNNING (PID $PID)"
+    else
+        COLOR="$RED"
+        STATE_TEXT="GPUControl Status: STOPPED"
+    fi
+
+    echo "${COLOR}"
+    echo "═══════════════════════════════════════════════════"
+    echo "            $STATE_TEXT"
+    echo ""
+
+    case "$GPU_TYPE" in
+        amd) amd_set_max_freq "$GPU_MAX_FREQ" ;;
+        intel)
+            printf '%s\n' "$GPU_MAX_FREQ" | sudo tee "$GPU_FREQ_PATH" > /dev/null 2>&1
+            ;;
+        mali|adreno)
+            printf '%s\n' "$GPU_MAX_FREQ" | sudo tee "$GPU_FREQ_PATH" > /dev/null 2>&1
+            ;;
+    esac
+
+    CURRENT_FREQ=$(get_current_freq "$GPU_TYPE")
+
+    if [[ "$CURRENT_FREQ" =~ ^[0-9]+$ ]]; then
+        case "$GPU_TYPE" in
+            intel|amd)
+                DISPLAY_FREQ="$CURRENT_FREQ"
+                ;;
+            mali|adreno)
+                DISPLAY_FREQ=$((CURRENT_FREQ / 1000000))
+                ;;
+            *)
+                DISPLAY_FREQ="$CURRENT_FREQ"
+                ;;
+        esac
+        echo "GPUControl Max Frequency: ${RESET}${BOLD}${COLOR}${DISPLAY_FREQ} MHz ${RESET}${COLOR}"
+    else
+        echo "GPUControl Max Frequency: ${RESET}${BOLD}${COLOR}Unavailable ${RESET}${COLOR}"
+    fi
+
+    echo "GPU Type: $GPU_TYPE"
+
+    if [[ "$GPU_TYPE" == "intel" || "$GPU_TYPE" == "amd" ]]; then
+        DEFAULT_MHZ=$ORIGINAL_GPU_MAX_FREQ
+    else
+        DEFAULT_MHZ=$((ORIGINAL_GPU_MAX_FREQ / 1000000))
+    fi
+
+    echo "Default Max Frequency: ${DEFAULT_MHZ} MHz"
+    echo "═══════════════════════════════════════════════════"
+    echo "${RESET}"
+
+    if [[ "$GPU_TYPE" == "amd" && -f "$PP_OD_FILE" ]]; then
+        echo "${MAGENTA}Available AMD SCLK States:${RESET}"
+        grep -i '^sclk' "$PP_OD_FILE" | nl -v0 | while read -r index line; do
+            freq=$(echo "$line" | sed -n 's/.*[[:space:]]\([0-9]\{2,\}\)[[:space:]]*[Mm][Hh][Zz].*/\1/p')
+            marker=""
+            [[ "$index" -eq "$AMD_SELECTED_SCLK_INDEX" ]] && marker="${MAGENTA}<-- SELECTED${RESET}"
+            printf "║ Index %2d: %s MHz %s\n" "$index" "$freq" "$marker"
+        done
+    fi
+
+    exit 0
+fi
+
+
+if [[ $# -eq 1 && "$1" =~ ^[0-9]+$ ]]; then
+    REQUESTED_FREQ="$1"
+    GPU_ARG="$GPU_TYPE"
+elif [[ $# -eq 2 && "$1" =~ ^[a-zA-Z]+$ && "$2" =~ ^[0-9]+$ ]]; then
+    GPU_ARG=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+    REQUESTED_FREQ="$2"
+
+    if [[ "$GPU_ARG" != "$GPU_TYPE" ]]; then
+        echo ""
+        echo "${RED}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) Error: GPU type '$GPU_ARG' does not match detected type '$GPU_TYPE'.${RESET}"
+        echo ""
+        exit 1
+    fi
+else
+    echo ""
+    echo "${RED}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) Invalid arguments.${RESET}"
+    help
+    exit 0
+fi
+
+if ! [[ "$REQUESTED_FREQ" =~ ^[0-9]+$ ]]; then
+    echo ""
+    echo "${RED}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) Error: Frequency must be a whole number.${RESET}"
+    echo ""
+    help
+    exit 1
+fi
+
+case "$GPU_ARG" in
+    intel)
+        if (( REQUESTED_FREQ > ORIGINAL_GPU_MAX_FREQ )); then
+            echo ""
+            echo "${RED}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) Error: Requested frequency (${REQUESTED_FREQ} MHz) exceeds original maximum (${ORIGINAL_GPU_MAX_FREQ} MHz).${RESET}"
+            echo ""
+            exit 1
+        fi
+
+        echo ""
+        printf '%s\n' "$REQUESTED_FREQ" | sudo tee "$GPU_FREQ_PATH" > /dev/null 2>&1
+        DISPLAY_FREQ="$REQUESTED_FREQ"
+        echo "${MAGENTA}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) Intel GPU frequency set to $DISPLAY_FREQ MHz${RESET}" | tee -a "$LOG_FILE"
+        echo ""
+        GPU_MAX_FREQ="$REQUESTED_FREQ"
+        save_config
+        ;;
+    mali|adreno)
+        freq_hz=
+        if (( REQUESTED_FREQ < 10000 )); then
+            freq_hz=$((REQUESTED_FREQ * 1000000))
+        else
+            freq_hz="$REQUESTED_FREQ"
+        fi
+
+        if (( freq_hz > ORIGINAL_GPU_MAX_FREQ )); then
+            echo ""
+            echo "${RED}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) Error: Requested frequency (${freq_hz} Hz) exceeds original maximum (${ORIGINAL_GPU_MAX_FREQ} Hz).${RESET}"
+            echo ""
+            exit 1
+        fi
+
+        echo ""
+        printf '%s\n' "$freq_hz" | sudo tee "$GPU_FREQ_PATH" > /dev/null 2>&1
+        DISPLAY_FREQ=$((freq_hz / 1000000))
+        echo "${MAGENTA}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) $GPU_ARG GPU frequency set to $DISPLAY_FREQ MHz${RESET}" | tee -a "$LOG_FILE"
+        GPU_MAX_FREQ="$freq_hz"
+        echo ""
+        save_config
+        ;;
+    amd)
+        if (( REQUESTED_FREQ > ORIGINAL_GPU_MAX_FREQ )); then
+            echo ""
+            echo "${RED}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) Error: Requested frequency (${REQUESTED_FREQ} MHz) exceeds original maximum (${ORIGINAL_GPU_MAX_FREQ} MHz).${RESET}"
+            echo ""
+            exit 1
+        fi
+
+        amd_set_max_freq "$REQUESTED_FREQ"
+        echo "${MAGENTA}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) AMD GPU frequency set to $REQUESTED_FREQ MHz${RESET}" | tee -a "$LOG_FILE"
+        echo ""
+        ;;
+    *)
+        echo ""
+        echo "${RED}$(printf '%(%Y-%m-%d %H:%M:%S)T\n' -1) Unsupported GPU type '$GPU_ARG'.${RESET}"
+        echo ""
+        help
+        exit 1
+        ;;
+esac
+
+exit 0
