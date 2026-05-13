@@ -423,6 +423,7 @@ start_component_now() {
 
 echo
 start_component_now "PowerControl" "$INSTALL_DIR/powercontrol"
+start_component_now "GPuControl" "$INSTALL_DIR/gpucontrol"
 echo "${CYAN}"
 sleep 0.01
 echo "╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗"
