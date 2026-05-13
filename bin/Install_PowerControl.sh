@@ -181,7 +181,6 @@ sudo mkdir -p "$CONFIG_DIR"
 sudo chown -R 1000:1000 "$CONFIG_DIR"
 sudo curl -fsSL https://raw.githubusercontent.com/shadowed1/PowerControl/main/bin/powercontrol-gui.py -o /bin/powercontrol-gui 2>/dev/null
 sudo chmod +x /bin/powercontrol-gui 2>/dev/null
-alias powercontrol-gui='sudo -E powercontrol-gui' 
 sudo mkdir -p /usr/share/applications/ /usr/share/icons/hicolor/48x48/apps/
     cat <<'EOF' | sudo tee /usr/share/applications/powercontrol-gui.desktop > /dev/null
 [Desktop Entry]
