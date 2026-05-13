@@ -185,41 +185,8 @@ class ConfigEditor(Gtk.Window):
                 ("RAMP_DOWN", "Ramp Down Speed (%)", "slider", 1, 50, 1, False),
                 ("CPU_POLL", "CPU Poll Interval (s)", "slider", 0.1, 5.0, 0.1, False),
             ],
-            "GPUControl": [
-                ("GPU_MAX_FREQ", "GPU Max Frequency (MHz)", "slider", 100, 2000, 10, False),
-            ],
-            "FanControl": [
-                ("MIN_FAN", "Minimum Fan Speed (%)", "slider", 0, 100, 1, False),
-                ("MAX_FAN", "Maximum Fan Speed (%)", "slider", 0, 100, 1, False),
-                ("FAN_MIN_TEMP", "Fan Minimum Temp (°C)", "slider", 30, 70, 1, False),
-                ("FAN_MAX_TEMP", "Fan Maximum Temp (°C)", "slider", 30, 94, 1, False),
-                ("STEP_UP", "Fan Step Up (%)", "slider", 1, 20, 1, False),
-                ("STEP_DOWN", "Fan Step Down (%)", "slider", 1, 20, 1, False),
-                ("FAN_POLL", "Fan Poll Interval (s)", "slider", 1, 10, 1, False),
-            ],
-            "BatteryControl": [
-                ("CHARGE_MAX", "Maximum Charge (%)", "slider", 20, 100, 1, False),
-            ],
-            "SleepControl - Battery": [
-                ("BATTERY_DIM_DELAY", "Dim Delay (minutes)", "slider", 1, 1440, 1, True),
-                ("BATTERY_BACKLIGHT", "Display Off (minutes)", "slider", 1, 1440, 1, True),
-                ("BATTERY_DELAY", "Sleep Delay (minutes)", "slider", 1, 1440, 1, True),
-                ("AUDIO_DETECTION_BATTERY", "Audio Detection", "switch", None, None, None, False),
-                ("LIDSLEEP_BATTERY", "Lid Sleep", "switch", None, None, None, False),
-            ],
-            "SleepControl - AC Power": [
-                ("POWER_DIM_DELAY", "Dim Delay (minutes)", "slider", 1, 4320, 1, True),
-                ("POWER_BACKLIGHT", "Display Off (minutes)", "slider", 1, 4320, 1, True),
-                ("POWER_DELAY", "Sleep Delay (minutes)", "slider", 1, 4320, 1, True),
-                ("AUDIO_DETECTION_POWER", "Audio Detection", "switch", None, None, None, False),
-                ("LIDSLEEP_POWER", "Lid Sleep", "switch", None, None, None, False),
-            ],
             "Start on Boot": [
-                ("STARTUP_BATTERYCONTROL", "BatteryControl", "switch", None, None, None, False),
                 ("STARTUP_POWERCONTROL", "PowerControl", "switch", None, None, None, False),
-                ("STARTUP_FANCONTROL", "FanControl", "switch", None, None, None, False),
-                ("STARTUP_GPUCONTROL", "GPUControl", "switch", None, None, None, False),
-                ("STARTUP_SLEEPCONTROL", "SleepControl", "switch", None, None, None, False),
             ],
         }
 
