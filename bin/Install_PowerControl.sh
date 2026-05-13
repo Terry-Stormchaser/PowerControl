@@ -83,8 +83,8 @@ declare -a files=(
   "powercontrol"
   "Uninstall_PowerControl.sh"
   "Reinstall_PowerControl.sh"
-  "version" "no_turbo.conf" 
-  "powercontrol.conf"
+  "version" "no_turbo.service" 
+  "powercontrol.service"
 )
 
 for file in "${files[@]}"; do
@@ -285,7 +285,7 @@ if sudo touch "$TEST_FILE" 2>/dev/null; then
     sudo rm -f "$TEST_FILE"
 
     if [[ -z "$link_cmd" || "$link_cmd" =~ ^[Yy]$ ]]; then
-        enable_component_on_boot "PowerControl" "$INSTALL_DIR/powercontrol.conf"
+        enable_component_on_boot "PowerControl" "$INSTALL_DIR/powercontrol.service"
     else
         echo "Skipping boot-time setup."
     fi
@@ -358,7 +358,7 @@ echo "║  sudo powercontrol ramp_up 15       # % in steps CPU will increase in 
 sleep 0.01
 echo "║  sudo powercontrol ramp_down 20     # % in steps CPU will decrease in clockspeed per second                        ║"
 sleep 0.01
-echo "║  sudo powercontrol startup          # Copy or Remove no_turbo.conf & powercontrol.conf at: /etc/init/              ║"
+echo "║  sudo powercontrol startup          # Copy or Remove no_turbo.service & powercontrol.service at: /etc/init/        ║"
 sleep 0.01
 echo "║                                                                                                                    ║"
 sleep 0.01
