@@ -66,4 +66,9 @@ __PowerControl commands with examples:__
   `sudo gpucontrol 800            # Set GPU max frequency to 800 MHz`            
   `sudo gpucontrol startup        # Enable or disable GPUControl on startup`        
   <br><br>
+
+  
+*Changelog:*
+
+- 0.1:  `Released PowerControl for Linux.`<br> <br>
   
