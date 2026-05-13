@@ -2,11 +2,8 @@
 Description=Disable Intel Turbo Boost
 After=multi-user.target
 [Service]
-Type=simple
-ExecStart=echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo
-Restart=always
-RestartSec=20
-StandardOutput=append:/var/log/powercontrol.log
-StandardError=append:/var/log/powercontrol.log
+Type=oneshot
+ExecStart=/usr/bin/sh -c 'echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo'
+RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
