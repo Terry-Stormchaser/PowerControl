@@ -1,4 +1,4 @@
 #!/bin/bash
-curl -L https://raw.githubusercontent.com/shadowed1/ChromeOS_PowerControl/main/ChromeOS_PowerControl_Installer.sh -o /home/chronos/user/ChromeOS_PowerControl_Installer.sh
+curl -L https://raw.githubusercontent.com/shadowed1/ChromeOS_PowerControl/main/bin/PowerControl_Installer.sh -o ~/ChromeOS_PowerControl_Installer.sh
 sudo mkdir -p /usr/local/bin
-sudo bash /home/chronos/user/ChromeOS_PowerControl_Installer.sh
+sudo -E bash ~/ChromeOS_PowerControl_Installer.sh
