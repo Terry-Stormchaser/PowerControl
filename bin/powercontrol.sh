@@ -689,8 +689,6 @@ limits() {
     fi
 }
 
-
-
 max_perf_pct() {
     local intel_path="/sys/devices/system/cpu/intel_pstate/max_perf_pct"
     local policy_paths=()
@@ -744,7 +742,6 @@ max_perf_pct() {
     echo "${CYAN}Maximum performance percentage set to $MAX_PERF_PCT%${RESET}" | tee -a "$LOG_FILE"
     echo ""
 }
-
 
 case "$1" in
    start)
