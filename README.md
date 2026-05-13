@@ -31,7 +31,7 @@ __How It Works:__
 - AMD GPU's maximum clockspeed changed from: /sys/class/drm/card0/pp_od_clk_voltage
 - Adreno GPU's maximum clockspeed changed from /sys/class/kgsl/kgsl-3d0/max_gpuclk
 - Mali GPU's maximum clockspeed changed from: /sys/class/devfreq/mali0/max_freq
-
+<br>
 
 __PowerControl commands with examples:__                                
                                                                                                      
