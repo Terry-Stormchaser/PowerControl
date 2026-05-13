@@ -8,8 +8,6 @@ Open Terminal, copy paste, and run:
 
 __How It Works:__
 
-<br>
-
 *PowerControl:*
 
 - Uses ARM, AMD, and Intel's max_perf_pct for easy user control.
