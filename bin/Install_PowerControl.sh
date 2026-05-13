@@ -467,7 +467,7 @@ echo "║                                                                       
 sleep 0.01
 echo "║  sudo powercontrol version      # Check PowerControl version                                                       ║"
 sleep 0.01
-echo "║  sudo powercontrol reinstall    # Download and reinstall PowerControl                                     ║"
+echo "║  sudo powercontrol reinstall    # Download and reinstall PowerControl                                              ║"
 sleep 0.01
 echo "║  sudo powercontrol uninstall    # Run uninstaller                                                                  ║"
 sleep 0.01
