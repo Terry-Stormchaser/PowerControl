@@ -287,7 +287,7 @@ class SleepTimelineGraph(Gtk.DrawingArea):
         (0.12, 0.30, 0.65),
         (0.06, 0.12, 0.35),
     ]
-    _SEG_LABELS = ["Dim Display", "Display Off", "Sleep"]
+    _SEG_LABELS = ["Dim Display ➜", "Display Off ➜", "Sleep ➜"]
 
     def __init__(self, get_val):
         super().__init__()
