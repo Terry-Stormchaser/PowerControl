@@ -795,7 +795,7 @@ class ConfigEditor(Gtk.Window):
                 ("GPU_MAX_FREQ",  "GPU Max Frequency (MHz)",   "slider", 100, 2000, 10, False),
             ],
             "Start on Boot": [
-                ("STARTUP_BATTERYCONTROL", "BatteryControl",     "switch", None, None, None, False),
+                ("STARTUP_POWERCONTROL", "PowerControl",     "switch", None, None, None, False),
                 ("STARTUP_GPUCONTROL",     "GPUControl",         "switch", None, None, None, False),
             ],
         }
