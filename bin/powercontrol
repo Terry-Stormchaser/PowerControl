@@ -58,29 +58,82 @@ detect_cpu_type() {
     IS_INTEL=0
     IS_AMD=0
     IS_ARM=0
+
     PERF_PATH=""
     PERF_PATHS=()
     TURBO_PATH=""
+    TEMP_PATH=""
 
     case "$CPU_VENDOR" in
         GenuineIntel)
             IS_INTEL=1
+
             if [ -f "/sys/devices/system/cpu/intel_pstate/max_perf_pct" ]; then
                 PERF_PATH="/sys/devices/system/cpu/intel_pstate/max_perf_pct"
                 TURBO_PATH="/sys/devices/system/cpu/intel_pstate/no_turbo"
             fi
+
+            for zone in /sys/class/thermal/thermal_zone*/temp; do
+                if [ -r "$zone" ]; then
+                    TEMP_PATH="$zone"
+                    break
+                fi
+            done
             ;;
+
         AuthenticAMD)
             IS_AMD=1
+
             if [ -f "/sys/devices/system/cpu/amd_pstate/max_perf_pct" ]; then
                 PERF_PATH="/sys/devices/system/cpu/amd_pstate/max_perf_pct"
             else
-                mapfile -t PERF_PATHS < <(find /sys/devices/system/cpu/cpufreq/ -type f -name 'scaling_max_freq' 2>/dev/null)
+                mapfile -t PERF_PATHS < <(
+                    find /sys/devices/system/cpu/cpufreq/ \
+                        -type f -name 'scaling_max_freq' 2>/dev/null
+                )
+            fi
+
+            for hwmon in /sys/class/hwmon/hwmon*; do
+                [ -r "$hwmon/name" ] || continue
+
+                read -r name < "$hwmon/name"
+
+                if [ "$name" = "k10temp" ]; then
+                    if [ -r "$hwmon/temp2_input" ]; then
+                        TEMP_PATH="$hwmon/temp2_input"
+                    elif [ -r "$hwmon/temp1_input" ]; then
+                        TEMP_PATH="$hwmon/temp1_input"
+                    fi
+
+                    break
+                fi
+            done
+
+            # Fallback
+            if [ -z "$TEMP_PATH" ]; then
+                for zone in /sys/class/thermal/thermal_zone*/temp; do
+                    if [ -r "$zone" ]; then
+                        TEMP_PATH="$zone"
+                        break
+                    fi
+                done
             fi
             ;;
+
         *)
             IS_ARM=1
-            mapfile -t PERF_PATHS < <(find /sys/devices/system/cpu/cpufreq/ -type f -name 'scaling_max_freq' 2>/dev/null)
+
+            mapfile -t PERF_PATHS < <(
+                find /sys/devices/system/cpu/cpufreq/ \
+                    -type f -name 'scaling_max_freq' 2>/dev/null
+            )
+
+            for zone in /sys/class/thermal/thermal_zone*/temp; do
+                if [ -r "$zone" ]; then
+                    TEMP_PATH="$zone"
+                    break
+                fi
+            done
             ;;
     esac
 }
@@ -217,18 +270,26 @@ save_config() {
 detect_cpu_type
 load_config
 
- get_temp() {
-    local temp_celsius
-    if read -r temp_celsius < /sys/class/thermal/thermal_zone0/temp; then
-        if (( temp_celsius >= 0 )); then
-            temp_c=$(( temp_celsius / 1000 ))
-            echo "$temp_c"
+get_temp() {
+    local temp_millic
+
+    if [ -z "$TEMP_PATH" ] || [ ! -r "$TEMP_PATH" ]; then
+        echo "0"
+        return 1
+    fi
+
+    if read -r temp_millic < "$TEMP_PATH"; then
+        if [[ "$temp_millic" =~ ^[0-9]+$ ]] &&
+           (( temp_millic > 0 )) &&
+           (( temp_millic < 150000 ))
+        then
+            echo $(( temp_millic / 1000 ))
             return 0
         fi
     fi
-    echo "Failed to get temperature." >&2
-    continue
-    sleep 1
+
+    echo "0"
+    return 1
 }
 
 
