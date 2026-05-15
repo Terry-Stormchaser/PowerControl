@@ -529,25 +529,23 @@ class GraphPanel(Gtk.ScrolledWindow):
         self.cpu_graph = CPUCurveGraph(get_val)
         row1.pack_start(self.cpu_graph, True, True, 0)
 
-        self.fan_graph = FanCurveGraph(get_val)
-        row1.pack_start(self.fan_graph, True, True, 0)
+        #self.fan_graph = FanCurveGraph(get_val)
+        #row1.pack_start(self.fan_graph, True, True, 0)
 
         row3 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         vbox.pack_start(row3, False, False, 0)
 
-        self.bat_gauge = BatteryGauge(get_val)
-        row3.pack_start(self.bat_gauge, True, True, 0)
+        #self.bat_gauge = BatteryGauge(get_val)
+        #row3.pack_start(self.bat_gauge, True, True, 0)
 
         self.gpu_gauge = GPUGauge(get_val, get_gpu_max_fn)
         row3.pack_start(self.gpu_gauge, True, True, 0)
         
-        self.sleep_graph = SleepTimelineGraph(get_val)
-        vbox.pack_start(self.sleep_graph, False, False, 0)
+        #self.sleep_graph = SleepTimelineGraph(get_val)
+        #vbox.pack_start(self.sleep_graph, False, False, 0)
 
         self._graphs = [
-            self.cpu_graph, self.fan_graph,
-            self.sleep_graph,
-            self.bat_gauge, self.gpu_gauge,
+            self.cpu_graph, self.gpu_gauge,
         ]
 
     def refresh_all(self):
@@ -796,38 +794,9 @@ class ConfigEditor(Gtk.Window):
             "GPUControl": [
                 ("GPU_MAX_FREQ",  "GPU Max Frequency (MHz)",   "slider", 100, 2000, 10, False),
             ],
-            "FanControl": [
-                ("MIN_FAN",       "Minimum Fan Speed (%)",     "slider",  0, 100,  1,   False),
-                ("MAX_FAN",       "Maximum Fan Speed (%)",     "slider",  0, 100,  1,   False),
-                ("FAN_MIN_TEMP",  "Fan Minimum Temp (°C)",     "slider", 30,  70,  1,   False),
-                ("FAN_MAX_TEMP",  "Fan Maximum Temp (°C)",     "slider", 30,  94,  1,   False),
-                ("STEP_UP",       "Fan Step Up (%)",           "slider",  1,  20,  1,   False),
-                ("STEP_DOWN",     "Fan Step Down (%)",         "slider",  1,  20,  1,   False),
-                ("FAN_POLL",      "Fan Poll Interval (s)",     "slider",  1,  10,  1,   False),
-            ],
-            "BatteryControl": [
-                ("CHARGE_MAX",    "Maximum Charge (%)",        "slider", 20, 100,  1,   False),
-            ],
-            "SleepControl - Battery": [
-                ("BATTERY_DIM_DELAY", "Dim Delay (minutes)",     "slider", 1, 1440, 1, True),
-                ("BATTERY_BACKLIGHT", "Display Off (minutes)",   "slider", 1, 1440, 1, True),
-                ("BATTERY_DELAY",     "Sleep Delay (minutes)",   "slider", 1, 1440, 1, True),
-                ("AUDIO_DETECTION_BATTERY", "Audio Detection",   "switch", None, None, None, False),
-                ("LIDSLEEP_BATTERY",        "Lid Sleep",         "switch", None, None, None, False),
-            ],
-            "SleepControl - AC Power": [
-                ("POWER_DIM_DELAY", "Dim Delay (minutes)",       "slider", 1, 4320, 1, True),
-                ("POWER_BACKLIGHT", "Display Off (minutes)",     "slider", 1, 4320, 1, True),
-                ("POWER_DELAY",     "Sleep Delay (minutes)",     "slider", 1, 4320, 1, True),
-                ("AUDIO_DETECTION_POWER", "Audio Detection",     "switch", None, None, None, False),
-                ("LIDSLEEP_POWER",        "Lid Sleep",           "switch", None, None, None, False),
-            ],
             "Start on Boot": [
                 ("STARTUP_BATTERYCONTROL", "BatteryControl",     "switch", None, None, None, False),
-                ("STARTUP_POWERCONTROL",   "PowerControl",       "switch", None, None, None, False),
-                ("STARTUP_FANCONTROL",     "FanControl",         "switch", None, None, None, False),
                 ("STARTUP_GPUCONTROL",     "GPUControl",         "switch", None, None, None, False),
-                ("STARTUP_SLEEPCONTROL",   "SleepControl",       "switch", None, None, None, False),
             ],
         }
 
