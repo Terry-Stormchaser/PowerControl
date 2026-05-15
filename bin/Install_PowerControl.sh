@@ -180,7 +180,8 @@ done
 OLD_CONFIG_PATH="$INSTALL_DIR/config.sh"
 CONFIG_DIR="/usr/local/bin/PowerControl_Config"
 sudo mkdir -p "$CONFIG_DIR"
-sudo chown -R 1000:1000 "$CONFIG_DIR"
+sudo chown -R 1000:1000 "$CONFIG_DIR" 2>/dev/null
+sudo chown 1000:1000 "$CONFIG_DIR/config" 2>/dev/null
 sudo curl -fsSL https://raw.githubusercontent.com/shadowed1/PowerControl/main/bin/powercontrol-gui.py -o /bin/powercontrol-gui 2>/dev/null
 sudo chmod +x /bin/powercontrol-gui 2>/dev/null
 sudo mkdir -p /usr/share/applications/ /usr/share/icons/hicolor/48x48/apps/
@@ -420,6 +421,9 @@ start_component_now() {
         echo ""
     fi
 }
+
+sudo chown -R 1000:1000 "$CONFIG_DIR" 2>/dev/null
+sudo chown 1000:1000 "$CONFIG_DIR/config" 2>/dev/null
 
 echo
 start_component_now "PowerControl" "$INSTALL_DIR/powercontrol"
