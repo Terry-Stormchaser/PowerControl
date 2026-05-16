@@ -10,6 +10,7 @@ RESET=$(tput sgr0)
 SHOW_POWERCONTROL_NOTICE=0
 SHOW_GPUCONTROL_NOTICE=0
 TEST_FILE="/etc/systemd/system/.test"
+
 detect_cpu_type() {
     CPU_VENDOR=$(grep -m1 'vendor_id' /proc/cpuinfo | awk '{print $3}' || echo "unknown")
     IS_INTEL=0
@@ -19,7 +20,7 @@ detect_cpu_type() {
     PERF_PATH=""
     PERF_PATHS=()
     TURBO_PATH=""
-    ASAHI_HEATPIPE_PATH=""
+    TEMP_PATH=""
     
     case "$CPU_VENDOR" in
         GenuineIntel)
@@ -28,34 +29,74 @@ detect_cpu_type() {
                 PERF_PATH="/sys/devices/system/cpu/intel_pstate/max_perf_pct"
                 TURBO_PATH="/sys/devices/system/cpu/intel_pstate/no_turbo"
             fi
+            for zone in /sys/class/thermal/thermal_zone*/temp; do
+                if [ -r "$zone" ]; then
+                    TEMP_PATH="$zone"
+                    break
+                fi
+            done
             ;;
         AuthenticAMD)
             IS_AMD=1
             if [ -f "/sys/devices/system/cpu/amd_pstate/max_perf_pct" ]; then
                 PERF_PATH="/sys/devices/system/cpu/amd_pstate/max_perf_pct"
             else
-                mapfile -t PERF_PATHS < <(find /sys/devices/system/cpu/cpufreq/ -type f -name 'scaling_max_freq' 2>/dev/null)
+                mapfile -t PERF_PATHS < <(
+                    find /sys/devices/system/cpu/cpufreq/ \
+                        -type f -name 'scaling_max_freq' 2>/dev/null
+                )
+            fi
+            for hwmon in /sys/class/hwmon/hwmon*; do
+                [ -r "$hwmon/name" ] || continue
+                read -r name < "$hwmon/name"
+                if [ "$name" = "k10temp" ]; then
+                    if [ -r "$hwmon/temp2_input" ]; then
+                        TEMP_PATH="$hwmon/temp2_input"
+                    elif [ -r "$hwmon/temp1_input" ]; then
+                        TEMP_PATH="$hwmon/temp1_input"
+                    fi
+                    break
+                fi
+            done
+            if [ -z "$TEMP_PATH" ]; then
+                for zone in /sys/class/thermal/thermal_zone*/temp; do
+                    if [ -r "$zone" ]; then
+                        TEMP_PATH="$zone"
+                        break
+                    fi
+                done
             fi
             ;;
         *)
             IS_ARM=1
-            mapfile -t PERF_PATHS < <(find /sys/devices/system/cpu/cpufreq/ -type f -name 'scaling_max_freq' 2>/dev/null)
-            if uname -a | grep -q '^Linux asahi'; then
+
+            mapfile -t PERF_PATHS < <(
+                find /sys/devices/system/cpu/cpufreq/ \
+                    -type f -name 'scaling_max_freq' 2>/dev/null
+            )
+
+            local uname_str
+            uname_str=$(uname -r)
+            if echo "$uname_str" | grep -qi 'asahi'; then
                 IS_ASAHI=1
-            
                 for hwmon in /sys/class/hwmon/hwmon*; do
-                    if [ -r "$hwmon/power3_label" ] &&
-                       [ -r "$hwmon/power3_input" ]
-                    then
-                        read -r label < "$hwmon/power3_label"
-            
+                    for label_path in "$hwmon"/power*_label; do
+                        [ -r "$label_path" ] || continue
+                        read -r label < "$label_path"
                         if [ "$label" = "Heatpipe Power" ]; then
-                            ASAHI_HEATPIPE_PATH="$hwmon/power3_input"
-                            break
+                            ASAHI_HEATPIPE_PATH="${label_path%_label}_input"
+                            break 2
                         fi
-                    fi
+                    done
                 done
             fi
+
+            for zone in /sys/class/thermal/thermal_zone*/temp; do
+                if [ -r "$zone" ]; then
+                    TEMP_PATH="$zone"
+                    break
+                fi
+            done
             ;;
     esac
 }
