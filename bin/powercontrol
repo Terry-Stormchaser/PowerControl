@@ -12,7 +12,7 @@ else
     RED="" GREEN="" YELLOW="" BLUE="" MAGENTA="" CYAN="" BOLD="" RESET=""
 fi
 
-INSTALL_DIR="/usr/local/bin/PowerControl"
+INSTALL_DIR="@INSTALL_DIR@"
 CONFIG_FILE="/usr/local/bin/PowerControl_Config/config"
 LOG_FILE="/var/log/powercontrol.log"
 RUN_FLAG="$INSTALL_DIR/.powercontrol_enabled"
