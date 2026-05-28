@@ -1,4 +1,9 @@
 # PowerControl
+
+<p align="center">
+  <img src="https://i.imgur.com/orFPYNP.png" alt="logo" />
+</p>
+
 ## How to Install:
 Open Terminal, copy paste, and run: 
 
