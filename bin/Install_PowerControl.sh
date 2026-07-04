@@ -124,14 +124,13 @@ detect_gpu_freq() {
         GPU_TYPE="amd"
         for f in /sys/class/drm/card*/device/pp_od_clk_voltage; do
             if [ -f "$f" ]; then
-                PP_OD_FILE="/sys/class/drm/card/device/pp_od_clk_voltage"
-                mapfile -t SCLK_LINES < <(sudo grep -i '^sclk' "$PP_OD_FILE" 2>/dev/null)
+                mapfile -t SCLK_LINES < <(sudo grep -i '^sclk' "$f" 2>/dev/null)
                 if [[ ${#SCLK_LINES[@]} -gt 0 ]]; then
                 GPU_MAX_FREQ=$(printf '%s\n' "${SCLK_LINES[@]}" \
                     | sed -n 's/.*\([0-9]\{1,\}\)[Mm][Hh][Zz].*/\1/p' \
                     | sort -nr | head -n1)
                 fi
-                GPU_FREQ_PATH="$PP_OD_FILE"
+                GPU_FREQ_PATH="$f"
                 GPU_MAX_FREQ=${GPU_MAX_FREQ:-0}
 
     # AMD GCN
