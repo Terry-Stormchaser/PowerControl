@@ -132,6 +132,7 @@ detect_gpu_freq() {
                 fi
                 GPU_FREQ_PATH="$f"
                 GPU_MAX_FREQ=${GPU_MAX_FREQ:-0}
+                done
 
     # AMD GCN
     elif [ -f /sys/class/drm/card0/device/pp_dpm_sclk ]; then
